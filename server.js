@@ -1,10 +1,11 @@
-require("dotenv").config();
-const express = require("express");
-const bcrypt = require("bcryptjs");
-const jwt = require("jsonwebtoken");
-const mongoose = require("mongoose");
-const cors = require("cors");
+import express from "express";
+import mongoose from "mongoose";
+import cors from "cors";
+import bcrypt from "bcryptjs";
+import jwt from "jsonwebtoken";
+import dotenv from "dotenv";
 
+dotenv.config();
 const app = express();
 
 app.use(cors());
