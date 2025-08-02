@@ -1,261 +1,308 @@
-import express from "express";
-import mongoose from "mongoose";
-import cors from "cors";
-import bcrypt from "bcryptjs";
-import jwt from "jsonwebtoken";
-import dotenv from "dotenv";
+require("dotenv").config();
+const express = require("express");
+const mongoose = require("mongoose");
+const cors = require("cors");
 
-dotenv.config();
 const app = express();
 
-app.use(cors());
+const corsOptions = {
+  origin: "*",
+  methods: ["GET", "POST", "PUT", "DELETE"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+};
+
+app.use(cors(corsOptions));
 app.use(express.json());
 
-// -------------------- Database --------------------
-if (!process.env.MONGO_URI) throw new Error("Please define MONGO_URI in .env");
-await mongoose.connect(process.env.MONGO_URI, {});
+// MongoDB connection
+mongoose
+  .connect(process.env.MONGO_URI, {
+    useNewUrlParser: true,
+    useUnifiedTopology: true,
+    serverSelectionTimeoutMS: 30000,
+    socketTimeoutMS: 45000,
+    maxPoolSize: 10,
+    retryWrites: true,
+    retryReads: true,
+  })
+  .then(() => console.log("Connected to MongoDB"))
+  .catch((err) => console.error("MongoDB connection error:", err));
 
-// -------------------- Models --------------------
-const userSchema = new mongoose.Schema(
-  {
+// Models
+const Customer = mongoose.model(
+  "Customer",
+  new mongoose.Schema({
     name: String,
-    username: String,
-    password: String,
-    role: { type: String, default: "technician" },
-    permissions: {
-      addRepair: Boolean,
-      editRepair: Boolean,
-      deleteRepair: Boolean,
-      receiveDevice: Boolean,
-    },
-  },
-  { timestamps: true }
+    phone: String,
+    receivedAt: { type: Date, default: Date.now },
+  })
 );
 
-const repairSchema = new mongoose.Schema(
-  {
+const Technician = mongoose.model(
+  "Technician",
+  new mongoose.Schema({
+    name: String,
+    username: { type: String, unique: true },
+    password: String,
+    canReceive: { type: Boolean, default: false },
+    canAdd: { type: Boolean, default: false },
+    canEdit: { type: Boolean, default: false },
+  })
+);
+
+const Repair = mongoose.model(
+  "Repair",
+  new mongoose.Schema({
     customerName: String,
     deviceType: String,
-    issue: String,
+    fault: String,
     color: String,
-    phone: String,
+    phoneNumber: String,
     price: Number,
-    technician: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
-    recipient: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
-    parts: [{ name: String, source: String, cost: Number }],
-    totalPartsCost: Number,
+    technicianName: String,
+    receiverName: String,
+    receiverUsername: String,
+    wholesalePrice: Number,
+    wholesaleType: String,
     profit: Number,
     status: {
       type: String,
-      enum: ["مرفوض", "تم التسليم", "مكتمل", "جاري العمل", "في الانتظار"],
-      default: "في الانتظار",
+      enum: ["pending", "completed", "delivered", "rejected"],
+      default: "pending",
     },
     notes: String,
-  },
-  { timestamps: true }
+    lastActionBy: String,
+    createdAt: { type: Date, default: Date.now },
+  })
 );
 
-const logSchema = new mongoose.Schema(
-  {
-    repair: { type: mongoose.Schema.Types.ObjectId, ref: "Repair" },
-    oldTechnician: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
-    newTechnician: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
-    changedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
-    action: String,
-  },
-  { timestamps: true }
-);
-
-const User = mongoose.model("User", userSchema);
-const Repair = mongoose.model("Repair", repairSchema);
-const Log = mongoose.model("Log", logSchema);
-
-// -------------------- Middleware --------------------
-const auth = async (req, res, next) => {
-  const authHeader = req.headers.authorization;
-  if (!authHeader) return res.status(401).json({ message: "Unauthorized" });
-
-  const token = authHeader.split(" ")[1];
+// Stats API
+app.get("/api/stats", async (req, res) => {
   try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    req.user = decoded;
-    next();
-  } catch {
-    return res.status(401).json({ message: "Invalid token" });
-  }
-};
-
-const checkAdmin = (req, res, next) => {
-  if (req.user?.role === "admin") return next();
-  return res.status(403).json({ message: "Admins only" });
-};
-
-const checkPermission = (permission) => (req, res, next) => {
-  if (req.user?.role === "admin" || req.user?.permissions?.[permission])
-    return next();
-  return res.status(403).json({ message: "Permission denied" });
-};
-
-// Utility
-const calculateProfit = (repairPrice, parts) => {
-  const totalPartsCost = (parts || []).reduce(
-    (sum, p) => sum + (p.cost || 0),
-    0
-  );
-  const profit = (repairPrice || 0) - totalPartsCost;
-  return { totalPartsCost, profit };
-};
-
-// -------------------- API Routes --------------------
-
-// AUTH
-app.post("/api/auth/login", async (req, res) => {
-  const { username, password } = req.body;
-  const user = await User.findOne({ username });
-  if (!user) return res.status(404).json({ message: "User not found" });
-
-  const isMatch = await bcrypt.compare(password, user.password);
-  if (!isMatch) return res.status(401).json({ message: "Invalid credentials" });
-
-  const token = jwt.sign(
-    { id: user._id, role: user.role, permissions: user.permissions },
-    process.env.JWT_SECRET,
-    { expiresIn: "1h" }
-  );
-
-  res.json({
-    token,
-    user: {
-      id: user._id,
-      name: user.name,
-      username: user.username,
-      role: user.role,
-      permissions: user.permissions,
-    },
-  });
-});
-
-// TECHNICIANS
-app.get("/api/technicians", auth, checkAdmin, async (req, res) => {
-  const techs = await User.find();
-  res.json(techs);
-});
-
-app.post("/api/technicians", auth, checkAdmin, async (req, res) => {
-  const { name, username, password, permissions } = req.body;
-  const existing = await User.findOne({ username });
-  if (existing)
-    return res.status(400).json({ message: "اسم المستخدم موجود بالفعل" });
-
-  const hashed = await bcrypt.hash(password, 10);
-  const tech = await User.create({
-    name,
-    username,
-    password: hashed,
-    role: "technician",
-    permissions: permissions || {
-      addRepair: false,
-      editRepair: false,
-      deleteRepair: false,
-      receiveDevice: false,
-    },
-  });
-  res.status(201).json(tech);
-});
-
-// REPAIRS
-app.get("/api/repairs", auth, async (req, res) => {
-  const repairs = await Repair.find()
-    .populate("technician", "name")
-    .populate("recipient", "name");
-  res.json(repairs);
-});
-
-app.post(
-  "/api/repairs",
-  auth,
-  checkPermission("addRepair"),
-  async (req, res) => {
-    const {
-      customerName,
-      deviceType,
-      issue,
-      color,
-      phone,
-      price,
-      parts,
-      technician,
-      recipient,
-      notes,
-    } = req.body;
-    const partsArray = Array.isArray(parts) ? parts : [];
-    const { totalPartsCost, profit } = calculateProfit(price, partsArray);
-
-    const repair = await Repair.create({
-      customerName,
-      deviceType,
-      issue,
-      color,
-      phone,
-      price,
-      parts: partsArray,
-      technician,
-      recipient,
-      totalPartsCost,
-      profit,
-      notes,
+    const dbStats = await mongoose.connection.db.stats();
+    const [customers, repairs, technicians] = await Promise.all([
+      Customer.countDocuments(),
+      Repair.countDocuments(),
+      Technician.countDocuments(),
+    ]);
+    res.json({
+      customers,
+      repairs,
+      technicians,
+      dbSizeMB: Math.round((dbStats.storageSize / 1024 / 1024) * 100) / 100,
     });
-
-    res.status(201).json(repair);
+  } catch (err) {
+    res.status(500).json({ error: err.message || "خطأ في جلب الإحصائيات" });
   }
-);
-
-app.put(
-  "/api/repairs/:id",
-  auth,
-  checkPermission("editRepair"),
-  async (req, res) => {
-    const repair = await Repair.findById(req.params.id);
-    if (!repair) return res.status(404).json({ message: "الصيانة غير موجودة" });
-
-    Object.assign(repair, req.body);
-    const { totalPartsCost, profit } = calculateProfit(
-      repair.price,
-      repair.parts || []
-    );
-    repair.totalPartsCost = totalPartsCost;
-    repair.profit = profit;
-
-    await repair.save();
-    res.json(repair);
-  }
-);
-
-app.delete(
-  "/api/repairs/:id",
-  auth,
-  checkPermission("deleteRepair"),
-  async (req, res) => {
-    const repair = await Repair.findByIdAndDelete(req.params.id);
-    if (!repair) return res.status(404).json({ message: "الصيانة غير موجودة" });
-
-    res.json({ message: "تم حذف الصيانة بنجاح" });
-  }
-);
-
-// BACKUP CLEAR
-app.delete("/api/backup/clear", auth, checkAdmin, async (req, res) => {
-  await Repair.deleteMany({});
-  await Log.deleteMany({});
-  await User.deleteMany({ role: { $ne: "admin" } });
-  res.json({ message: "تم مسح كل البيانات ماعدا الأدمن" });
 });
 
-// Default
-app.get("/", (req, res) => res.send("Serverless Backend is Running ✅"));
+// Customers API
+app.get("/api/customers", async (req, res) => {
+  try {
+    const customers = await Customer.find().sort({ receivedAt: -1 });
+    res.json(customers);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
-// -------------------- Start --------------------
+app.post("/api/customers", async (req, res) => {
+  try {
+    const customer = await Customer.create(req.body);
+    res.json(customer);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.put("/api/customers/:id", async (req, res) => {
+  try {
+    const customer = await Customer.findByIdAndUpdate(req.params.id, req.body, {
+      new: true,
+    });
+    res.json(customer);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.delete("/api/customers/:id", async (req, res) => {
+  try {
+    await Customer.findByIdAndDelete(req.params.id);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// Technicians API
+app.get("/api/technicians", async (req, res) => {
+  try {
+    const technicians = await Technician.find();
+    res.json(technicians);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/technicians", async (req, res) => {
+  try {
+    if (!req.body.username) {
+      return res.status(400).json({ error: "اسم المستخدم مطلوب" });
+    }
+    const technician = await Technician.create(req.body);
+    res.json(technician);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.put("/api/technicians/:id", async (req, res) => {
+  try {
+    if (!req.body.username) {
+      return res.status(400).json({ error: "اسم المستخدم مطلوب" });
+    }
+    const updated = await Technician.findByIdAndUpdate(
+      req.params.id,
+      req.body,
+      { new: true }
+    );
+    res.json(updated);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.post("/api/technicians/login", async (req, res) => {
+  const { username, password } = req.body;
+  const tech = await Technician.findOne({ username });
+  if (tech && tech.password === password) {
+    return res.json({ success: true });
+  }
+  res.json({ success: false });
+});
+
+app.post("/api/technicians/verify", async (req, res) => {
+  const { username, password } = req.body;
+  const tech = await Technician.findOne({ username });
+  if (tech && tech.password === password) {
+    return res.json({
+      success: true,
+      canAdd: tech.canAdd,
+      canEdit: tech.canEdit,
+      canReceive: tech.canReceive,
+      name: tech.name,
+    });
+  }
+  res.json({ success: false });
+});
+
+app.delete("/api/technicians/:id", async (req, res) => {
+  try {
+    await Technician.findByIdAndDelete(req.params.id);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// Repairs API
+app.get("/api/repairs", async (req, res) => {
+  try {
+    const repairs = await Repair.find().lean().maxTimeMS(30000);
+    res.json(repairs);
+  } catch (err) {
+    res.status(500).json({ error: err.message || "حدث خطأ في الخادم" });
+  }
+});
+
+app.post("/api/repairs", async (req, res) => {
+  try {
+    const repairData = {
+      ...req.body,
+      profit: req.body.price - (req.body.wholesalePrice || 0),
+    };
+    const repair = await Repair.create(repairData);
+    res.json(repair);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.put("/api/repairs/:id", async (req, res) => {
+  try {
+    const updateData = {
+      ...req.body,
+      profit: req.body.price - (req.body.wholesalePrice || 0),
+    };
+    const repair = await Repair.findByIdAndUpdate(req.params.id, updateData, {
+      new: true,
+    });
+    res.json(repair);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.delete("/api/repairs/:id", async (req, res) => {
+  try {
+    await Repair.findByIdAndDelete(req.params.id);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// Backup API
+app.get("/api/backup", async (req, res) => {
+  try {
+    const [customers, repairs, technicians] = await Promise.all([
+      Customer.find(),
+      Repair.find(),
+      Technician.find(),
+    ]);
+    res.json({ customers, repairs, technicians });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/restore", async (req, res) => {
+  try {
+    await Promise.all([
+      Customer.deleteMany(),
+      Repair.deleteMany(),
+      Technician.deleteMany(),
+    ]);
+    const [customers, repairs, technicians] = await Promise.all([
+      Customer.insertMany(req.body.customers || []),
+      Repair.insertMany(req.body.repairs || []),
+      Technician.insertMany(req.body.technicians || []),
+    ]);
+    res.json({ success: true, customers, repairs, technicians });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete("/api/all", async (req, res) => {
+  try {
+    await Promise.all([
+      Customer.deleteMany(),
+      Repair.deleteMany(),
+      Technician.deleteMany(),
+    ]);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Vercel requires this to work properly
+module.exports = app;
+
+// Listen only once
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
-
-export default app;
+if (!module.parent) {
+  app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+}
