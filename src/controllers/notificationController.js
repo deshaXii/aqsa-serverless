@@ -1,7 +1,8 @@
-import Notification from "../models/";
+// controllers/notificationController.js
+const Notification = require("../models/Notification.model.js");
 
 // ✅ جلب كل الإشعارات
-export const getNotifications = async (req, res) => {
+const getNotifications = async (req, res) => {
   try {
     const notifications = await Notification.find({ user: req.user.id })
       .sort({ createdAt: -1 })
@@ -14,7 +15,7 @@ export const getNotifications = async (req, res) => {
 };
 
 // ✅ تعليم إشعار كمقروء
-export const markAsRead = async (req, res) => {
+const markAsRead = async (req, res) => {
   try {
     const { id } = req.params;
     const notification = await Notification.findById(id);
@@ -34,7 +35,7 @@ export const markAsRead = async (req, res) => {
 };
 
 // ✅ مسح كل الإشعارات
-export const clearNotifications = async (req, res) => {
+const clearNotifications = async (req, res) => {
   try {
     await Notification.deleteMany({ user: req.user.id });
     res.json({ message: "تم مسح كل الإشعارات" });
@@ -42,4 +43,10 @@ export const clearNotifications = async (req, res) => {
     console.error("Error clearing notifications:", err);
     res.status(500).json({ message: "فشل في مسح الإشعارات" });
   }
+};
+
+module.exports = {
+  getNotifications,
+  markAsRead,
+  clearNotifications,
 };

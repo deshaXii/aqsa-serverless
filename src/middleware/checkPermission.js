@@ -1,10 +1,18 @@
-const checkPermission = (permission) => {
+// middleware/checkPermission.js
+module.exports = (permission) => {
   return (req, res, next) => {
-    if (req.user?.role === "admin" || req.user?.permissions?.[permission]) {
-      return next();
+    if (!req.user) {
+      return res.status(401).json({ message: "غير مصرح" });
     }
-    return res.status(403).json({ message: "Permission denied" });
+
+    if (req.user.role === "admin") {
+      return next(); // الأدمن له كل الصلاحيات
+    }
+
+    if (!req.user.permissions || !req.user.permissions[permission]) {
+      return res.status(403).json({ message: "غير مصرح" });
+    }
+
+    next();
   };
 };
-
-export default checkPermission;
