@@ -32,4 +32,5 @@ const repairSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-module.exports = mongoose.model("Repair", repairSchema);
+module.exports =
+  mongoose.models.Repair || mongoose.model("Repair", repairSchema);
