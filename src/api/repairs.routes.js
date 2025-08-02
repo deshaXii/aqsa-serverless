@@ -1,9 +1,9 @@
 const express = require("express");
-const Repair = require("./src/models/Repair.model.js");
-const User = require("./src/models/User.model.js");
-const auth = require("./src/middleware/auth.js");
-const checkPermission = require("./src/middleware/checkPermission.js");
-const { calculateProfit } = require("./src/utils/calculateProfit.js");
+const Repair = require("../models/Repair.model.js");
+const User = require("../models/User.model.js");
+const auth = require("../middleware/auth.js");
+const checkPermission = require("../middleware/checkPermission.js");
+const { calculateProfit } = require("../utils/calculateProfit.js");
 
 const router = express.Router();
 
