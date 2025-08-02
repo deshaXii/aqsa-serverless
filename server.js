@@ -27,7 +27,7 @@ mongoose
   .catch((err) => console.error("❌ MongoDB connection error:", err));
 
 // ✅ استيراد الموديلات (مهم لفنكشنات populate)
-require("./src/api/models/User.model.js");
+require("./src/models/User.model.js");
 require("./src/models/Repair.model.js");
 require("./src/models/Part.model.js");
 require("./src/models/Log.model.js");
