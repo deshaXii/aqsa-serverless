@@ -10,6 +10,4 @@ const notificationSchema = new mongoose.Schema(
 );
 
 // ✅ الحل: استخدم existing model لو موجود
-module.exports =
-  mongoose.models.Notification ||
-  mongoose.model("Notification", notificationSchema);
+module.exports = mongoose.model("Notification", notificationSchema);

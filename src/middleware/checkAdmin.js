@@ -1,18 +1,7 @@
-// models/Notification.model.js
-const mongoose = require("mongoose");
-
-const notificationSchema = new mongoose.Schema(
-  {
-    user: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
-    message: { type: String, required: true },
-    type: {
-      type: String,
-      enum: ["info", "warning", "success"],
-      default: "info",
-    },
-    read: { type: Boolean, default: false },
-  },
-  { timestamps: true }
-);
-
-module.exports = mongoose.model("Notification", notificationSchema);
+// middleware/checkAdmin.js
+module.exports = (req, res, next) => {
+  if (!req.user || req.user.role !== "admin") {
+    return res.status(403).json({ message: "للمسؤول فقط" });
+  }
+  next();
+};
