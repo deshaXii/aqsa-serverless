@@ -22,10 +22,21 @@ const notificationsRoutes = require("./src/api/notifications.routes.js");
 const app = express();
 
 // ✅ Middleware
+const allowedOrigins = [
+  "https://new-front-aqsa.vercel.app",
+  "http://localhost:5173",
+];
+
 app.use(
   cors({
-    origin: "*",
-    methods: ["GET", "POST", "PUT", "DELETE"],
+    origin: function (origin, callback) {
+      // لو مفيش origin (زي Postman) يسمح
+      if (!origin) return callback(null, true);
+      if (allowedOrigins.includes(origin)) return callback(null, true);
+      return callback(new Error("Not allowed by CORS"));
+    },
+    credentials: true,
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
   })
 );
