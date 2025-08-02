@@ -3,8 +3,8 @@ const {
   getNotifications,
   markAsRead,
   clearNotifications,
-} = require("../controllers/notificationController.js");
-const auth = require("../middleware/auth.js");
+} = require("./src/controllers/notificationController.js");
+const auth = require("../src/middleware/auth.js");
 
 const router = express.Router();
 

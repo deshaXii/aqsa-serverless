@@ -1,4 +1,4 @@
-import Notification from "../models/Notification.model.js";
+import Notification from "./src/models/Notification.model.js";
 
 // ✅ جلب كل الإشعارات
 export const getNotifications = async (req, res) => {

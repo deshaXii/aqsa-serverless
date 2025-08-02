@@ -1,9 +1,9 @@
 const express = require("express");
-const auth = require("../middleware/auth.js");
-const checkAdmin = require("../middleware/checkAdmin.js");
-const Repair = require("../models/Repair.model.js");
-const User = require("../models/User.model.js");
-const Log = require("../models/Log.model.js");
+const auth = require("./src/middleware/auth.js");
+const checkAdmin = require("./src/middleware/checkAdmin.js");
+const Repair = require("./src/models/Repair.model.js");
+const User = require("./src/models/User.model.js");
+const Log = require("./src/models/Log.model.js");
 
 const router = express.Router();
 

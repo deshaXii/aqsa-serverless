@@ -1,6 +1,6 @@
 const express = require("express");
-const Log = require("../models/Log.model.js");
-const auth = require("../middleware/auth.js");
+const Log = require("./src/models/Log.model.js");
+const auth = require("./src/middleware/auth.js");
 
 const router = express.Router();
 
