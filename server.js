@@ -9,6 +9,8 @@ require("./src/models/Repair.model.js");
 require("./src/models/Log.model.js");
 require("./src/models/Part.model.js");
 require("./src/models/Notification.model.js");
+require("./src/models/Account.model.js");
+require("./src/models/Transaction.model.js");
 
 const authRoutes = require("./src/api/auth.routes.js");
 const repairsRoutes = require("./src/api/repairs.routes.js");
@@ -18,6 +20,7 @@ const backupRoutes = require("./src/api/backup.routes.js");
 const partsRoutes = require("./src/api/parts.routes.js");
 const logsRoutes = require("./src/api/logs.routes.js");
 const notificationsRoutes = require("./src/api/notifications.routes.js");
+const accountsRoutes = require("./src/api/accounts.routes.js");
 
 const app = express();
 
@@ -60,6 +63,7 @@ app.use("/api/backup", backupRoutes);
 app.use("/api/parts", partsRoutes);
 app.use("/api/logs", logsRoutes);
 app.use("/api/notifications", notificationsRoutes);
+app.use("/api/accounts", accountsRoutes);
 
 // ✅ Health Check Route
 app.get("/", (req, res) => {
