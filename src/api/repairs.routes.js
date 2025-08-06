@@ -7,21 +7,21 @@ const checkPermission = require("../middleware/checkPermission.js");
 // ✅ جلب جميع الصيانات مع فلترة للفنيين
 router.get("/", auth, async (req, res) => {
   try {
-    let query = {};
-    if (req.user.role !== "admin") {
-      // الفني العادي يشوف الصيانات الخاصة به فقط
-      query = { technician: req.user.id };
+    let filters = {};
+
+    // لو الفني مش Admin ومش معاه صلاحية الاستلام -> يشوف شغله بس
+    if (req.user.role !== "admin" && !req.user.permissions?.receiveDevice) {
+      filters.$or = [{ technician: req.user.id }, { recipient: req.user.id }];
     }
-    const repairs = await Repair.find(query)
-      .populate("technician", "name")
-      .populate("recipient", "name")
-      .populate("parts")
-      .sort({ createdAt: -1 });
+
+    const repairs = await Repair.find(filters)
+      .populate("technician", "name phone")
+      .populate("recipient", "name phone");
+
     res.json(repairs);
   } catch (err) {
-    res
-      .status(500)
-      .json({ message: "فشل في جلب بيانات الصيانة", error: err.message });
+    console.error("Error fetching repairs:", err);
+    res.status(500).json({ message: "فشل في جلب الصيانات" });
   }
 });
 

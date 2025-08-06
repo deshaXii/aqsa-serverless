@@ -15,6 +15,18 @@ router.get("/", auth, checkAdmin, async (req, res) => {
   }
 });
 
+router.get("/receivers", auth, async (req, res) => {
+  try {
+    const receivers = await User.find(
+      { "permissions.receiveDevice": true },
+      "name phone"
+    );
+    res.json(receivers);
+  } catch (err) {
+    res.status(500).json({ message: "فشل في جلب المستلمين" });
+  }
+});
+
 // إضافة فني
 router.post("/", auth, checkAdmin, async (req, res) => {
   try {
