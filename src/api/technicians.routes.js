@@ -5,13 +5,23 @@ const checkAdmin = require("../middleware/checkAdmin.js");
 
 const router = express.Router();
 
-// جلب جميع الفنيين
-router.get("/", auth, checkAdmin, async (req, res) => {
+// ✅ Get all technicians
+router.get("/", auth, async (req, res) => {
   try {
-    const techs = await User.find();
-    res.json(techs);
+    // إذا معاه صلاحية استلام، يقدر يشوف الفنيين
+    if (
+      req.user.role === "admin" ||
+      req.user.permissions?.adminOverride ||
+      req.user.permissions?.receiveDevice
+    ) {
+      const users = await User.find().select("-password");
+      res.json(users);
+    } else {
+      res.status(403).json({ message: "ليس لديك صلاحية لعرض قائمة الفنيين" });
+    }
   } catch (err) {
-    res.status(500).json({ message: "فشل في جلب الفنيين" });
+    console.error("Error fetching users:", err);
+    res.status(500).json({ message: "فشل في تحميل الفنيين" });
   }
 });
 

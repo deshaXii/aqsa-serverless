@@ -1,22 +1,22 @@
 const mongoose = require("mongoose");
 const bcrypt = require("bcryptjs");
 
+const permissionsSchema = new mongoose.Schema({
+  addRepair: { type: Boolean, default: false },
+  editRepair: { type: Boolean, default: false },
+  deleteRepair: { type: Boolean, default: false },
+  receiveDevice: { type: Boolean, default: false },
+  accessAccounts: { type: Boolean, default: false },
+  adminOverride: { type: Boolean, default: false }, // صلاحية تعطي كل صلاحيات الأدمن
+});
+
 const userSchema = new mongoose.Schema(
   {
-    name: String,
-    username: { type: String, unique: true },
+    username: String,
     password: String,
-    role: {
-      type: String,
-      enum: ["admin", "technician"],
-      default: "technician",
-    },
-    permissions: {
-      addRepair: { type: Boolean, default: false },
-      editRepair: { type: Boolean, default: false },
-      deleteRepair: { type: Boolean, default: false },
-      receiveDevice: { type: Boolean, default: false },
-    },
+    name: String,
+    role: { type: String, default: "technician" }, // admin or technician
+    permissions: permissionsSchema,
   },
   { timestamps: true }
 );
