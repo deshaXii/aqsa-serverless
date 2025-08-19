@@ -2,6 +2,7 @@ const mongoose = require("mongoose");
 
 const repairSchema = new mongoose.Schema(
   {
+    repairId: { type: Number, unique: true },
     customerName: { type: String, required: true },
     deviceType: { type: String, required: true },
     issue: String,

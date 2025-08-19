@@ -30,20 +30,47 @@ router.post("/", auth, async (req, res) => {
 // ✅ إحصائيات الحسابات
 router.get("/summary", auth, async (req, res) => {
   try {
-    // 1️⃣ جلب كل المعاملات
-    const transactions = await Account.find().lean();
+    const { dateFilter } = req.query;
+    let dateRange = {};
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
 
-    // 2️⃣ جلب كل الصيانات المسلمة
-    const deliveredRepairs = await RepairModel.find({ status: "تم التسليم" })
+    if (dateFilter === "today") {
+      dateRange = { $gte: today };
+    } else if (dateFilter === "yesterday") {
+      const yesterday = new Date(today);
+      yesterday.setDate(yesterday.getDate() - 1);
+      dateRange = { $gte: yesterday, $lt: today };
+    } else if (dateFilter === "week") {
+      const weekAgo = new Date(today);
+      weekAgo.setDate(weekAgo.getDate() - 7);
+      dateRange = { $gte: weekAgo };
+    } else if (dateFilter === "month") {
+      const monthAgo = new Date(today);
+      monthAgo.setMonth(monthAgo.getMonth() - 1);
+      dateRange = { $gte: monthAgo };
+    } else {
+      // الافتراضي: اليوم
+      dateRange = { $gte: today };
+    }
+
+    // 1️⃣ جلب المعاملات حسب التاريخ
+    const transactions = await Account.find({
+      createdAt: dateRange,
+    }).lean();
+
+    // 2️⃣ جلب الصيانات حسب تاريخ التسليم (updatedAt وليس createdAt)
+    const deliveredRepairs = await RepairModel.find({
+      status: "تم التسليم",
+      updatedAt: dateRange, // التعديل هنا لاستخدام updatedAt بدلاً من createdAt
+    })
       .populate("technician", "name")
       .populate("parts")
       .lean();
 
-    // إجمالي الربح وقطع الغيار
+    // العمليات الحسابية
     let totalProfit = 0;
     let totalPartsCost = 0;
-
-    // أرباح الفنيين
     const technicianProfits = {};
 
     const repairDetails = deliveredRepairs.map((r) => {
@@ -78,7 +105,6 @@ router.get("/summary", auth, async (req, res) => {
       };
     });
 
-    // معاملات الداخل والخارج
     const totalIn = transactions
       .filter((t) => t.type === "داخل")
       .reduce((sum, t) => sum + t.amount, 0);
@@ -87,10 +113,11 @@ router.get("/summary", auth, async (req, res) => {
       .filter((t) => t.type === "خارج")
       .reduce((sum, t) => sum + t.amount, 0);
 
-    const netProfit = totalProfit / 2 + totalIn - totalOut; // نصيب المحل من الصيانات + الداخل - الخارج
+    // نصيب المحل: 50% من أرباح الصيانات + الدخل - المصروفات
+    const netProfit = totalProfit / 2 + totalIn - totalOut;
 
     res.json({
-      totalProfit, // إجمالي الربح قبل توزيع الفني/المحل
+      totalProfit,
       totalPartsCost,
       totalIn,
       totalOut,
@@ -98,6 +125,7 @@ router.get("/summary", auth, async (req, res) => {
       technicians: Object.values(technicianProfits),
       repairs: repairDetails,
       transactions,
+      dateFilter: dateFilter || "today",
     });
   } catch (err) {
     console.error("Error fetching accounts summary:", err);

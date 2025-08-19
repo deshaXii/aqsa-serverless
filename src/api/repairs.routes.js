@@ -5,21 +5,62 @@ const Technician = require("../models/User.model.js");
 const auth = require("../middleware/auth.js");
 const checkPermission = require("../middleware/checkPermission.js");
 const Notification = require("../models/Notification.model.js");
+const Counter = require("../models/Counter.model");
 
 // ✅ جلب جميع الصيانات مع فلترة للفنيين
 router.get("/", auth, async (req, res) => {
   try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = 30;
+    const skip = (page - 1) * limit;
     let filters = {};
+    const { technician, dateFilter, repairId } = req.query;
+
+    // فلترة حسب ID إذا موجود
+    if (repairId) {
+      filters.repairId = repairId;
+    }
+
+    // فلترة حسب الفني
+    if (technician) {
+      filters.technician = technician;
+    }
 
     if (req.user.role !== "admin" && !req.user.permissions?.receiveDevice) {
       filters.$or = [{ technician: req.user.id }, { recipient: req.user.id }];
     }
 
-    const repairs = await Repair.find(filters)
-      .populate("technician", "name phone")
-      .populate("recipient", "name phone");
+    // فلترة حسب التاريخ
+    if (dateFilter) {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
 
-    res.json(repairs);
+      if (dateFilter === "today") {
+        filters.createdAt = { $gte: today };
+      } else if (dateFilter === "yesterday") {
+        const yesterday = new Date(today);
+        yesterday.setDate(yesterday.getDate() - 1);
+        filters.createdAt = { $gte: yesterday, $lt: today };
+      }
+      // 'all' لا يحتاج إلى فلترة
+    }
+
+    const [repairs, total] = await Promise.all([
+      Repair.find(filters)
+        .sort({ createdAt: -1 }) // الأحدث أولاً
+        .skip(skip)
+        .limit(limit)
+        .populate("technician recipient")
+        .populate("technician", "name phone"),
+
+      Repair.countDocuments(filters),
+    ]);
+
+    res.json({
+      repairs,
+      totalPages: Math.ceil(total / limit),
+      currentPage: page,
+    });
   } catch (err) {
     console.error("Error fetching repairs:", err);
     res.status(500).json({ message: "فشل في جلب الصيانات" });
@@ -43,7 +84,14 @@ router.get("/:id", auth, async (req, res) => {
 // ✅ إنشاء صيانة جديدة
 router.post("/", auth, checkPermission("addRepair"), async (req, res) => {
   try {
+    const counter = await Counter.findOneAndUpdate(
+      { name: "repairId" },
+      { $inc: { seq: 1 } },
+      { new: true, upsert: true }
+    );
+
     const newRepair = new Repair({
+      repairId: counter.seq,
       ...req.body,
       status: "في الانتظار",
     });
