@@ -7,7 +7,7 @@ let app;
 try {
   app = require("./src/app");
 } catch {
-  app = require("./app");
+  app = require("./api/index");
 }
 
 const attachRealtime = require("./src/realtime/attachRealtime");

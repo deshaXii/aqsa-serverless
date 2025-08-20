@@ -9,6 +9,7 @@ const Notification = require("../models/Notification.model");
 const Settings = require("../models/Settings.model");
 const auth = require("../middleware/auth");
 const checkPermission = require("../middleware/checkPermission");
+const { requireAny, isAdmin, hasPerm } = require("../middleware/perm");
 
 router.use(auth);
 
@@ -209,7 +210,8 @@ router.get("/:id", async (req, res) => {
 // ===== CREATE =====
 router.post(
   "/",
-  require("../middleware/checkPermission")("addRepair"),
+  auth,
+  requireAny(isAdmin, hasPerm("addRepair"), hasPerm("receiveDevice")),
   async (req, res) => {
     const payload = req.body || {};
     payload.repairId = await nextRepairId();

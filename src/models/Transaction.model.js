@@ -1,13 +1,16 @@
-const mongoose = require("mongoose");
+"use strict";
+const { Schema, model } = require("mongoose");
 
-const transactionSchema = new mongoose.Schema(
+const TxSchema = new Schema(
   {
-    type: { type: String, enum: ["داخل", "خارج"], required: true },
+    type: { type: String, enum: ["in", "out"], required: true },
     amount: { type: Number, required: true },
-    note: { type: String, default: "" },
-    createdBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+    description: { type: String, default: "" },
+    date: { type: Date, default: Date.now },
+    createdBy: { type: Schema.Types.ObjectId, ref: "User" },
   },
   { timestamps: true }
 );
 
-module.exports = mongoose.model("Transaction", transactionSchema);
+TxSchema.index({ date: 1 });
+module.exports = model("Transaction", TxSchema);
