@@ -1,76 +1,128 @@
+// src/api/invoices.routes.js
 const express = require("express");
-const auth = require("../middleware/auth.js");
-const checkAdmin = require("../middleware/checkAdmin.js");
-const Repair = require("../models/Repair.model.js");
-
 const router = express.Router();
+const Repair = require("../models/Repair.model");
 
-// GET /api/invoices?startDate=2025-08-01&endDate=2025-08-05
-router.get("/", auth, async (req, res) => {
-  try {
-    if (
-      req.user.role === "admin" ||
-      req.user.permissions?.adminOverride ||
-      req.user.permissions?.receiveDevice
-    ) {
-      const { startDate, endDate } = req.query;
-      const query = {};
-
-      if (startDate && endDate) {
-        query.createdAt = {
-          $gte: new Date(startDate),
-          $lte: new Date(endDate),
-        };
-      } else if (startDate) {
-        query.createdAt = { $gte: new Date(startDate) };
-      } else if (endDate) {
-        query.createdAt = { $lte: new Date(endDate) };
-      }
-
-      const repairs = await Repair.find(query).populate("technician");
-
-      const totalProfit = repairs.reduce((sum, r) => sum + (r.profit || 0), 0);
-      const totalPartsCost = repairs.reduce(
-        (sum, r) => sum + (r.totalPartsCost || 0),
-        0
-      );
-
-      const technicianProfits = repairs.reduce((acc, r) => {
-        if (!r.technician) return acc;
-        const tech = acc.find((t) => t.technicianName === r.technician.name);
-        const profitShare = (r.profit || 0) / 2;
-        if (tech) tech.profit += profitShare;
-        else
-          acc.push({ technicianName: r.technician.name, profit: profitShare });
-        return acc;
-      }, []);
-
-      const partsByShop = {};
-      repairs.forEach((r) => {
-        (r.parts || []).forEach((part) => {
-          const shop = part.source || "المحل";
-          if (!partsByShop[shop]) partsByShop[shop] = [];
-          partsByShop[shop].push({
-            name: part.name,
-            cost: part.cost,
-            customerName: r.customerName,
-            technicianName: r.technician?.name || "-",
-          });
-        });
-      });
-
-      res.json({
-        totalProfit,
-        totalPartsCost,
-        technicianProfits,
-        repairs,
-        partsByShop,
-      });
+// helpers
+function buildInclusiveRange(startDate, endDate) {
+  if (!startDate && !endDate) return null;
+  const range = {};
+  if (startDate) {
+    if (/^\d{4}-\d{2}-\d{2}$/.test(startDate)) {
+      const s = new Date(startDate);
+      s.setHours(0, 0, 0, 0);
+      range.$gte = s;
+    } else {
+      range.$gte = new Date(startDate);
     }
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: "فشل في جلب بيانات الفواتير" });
   }
+  if (endDate) {
+    if (/^\d{4}-\d{2}-\d{2}$/.test(endDate)) {
+      const e = new Date(endDate);
+      e.setHours(0, 0, 0, 0);
+      e.setDate(e.getDate() + 1); // end-of-day inclusive => $lt next day
+      range.$lt = e;
+    } else {
+      range.$lte = new Date(endDate);
+    }
+  }
+  return range;
+}
+function todayRange() {
+  const s = new Date();
+  s.setHours(0, 0, 0, 0);
+  const e = new Date(s);
+  e.setDate(e.getDate() + 1);
+  return { $gte: s, $lt: e };
+}
+
+router.get("/", async (req, res) => {
+  let { startDate, endDate, all } = req.query;
+
+  // match “delivered invoices” only
+  const match = { status: "تم التسليم" };
+
+  // all=true => لا نطاق تاريخ
+  if (String(all) === "true") {
+    // no date filter
+  } else if (startDate || endDate) {
+    const range = buildInclusiveRange(startDate, endDate);
+    if (range) match.deliveryDate = range;
+  } else {
+    // default: اليوم
+    match.deliveryDate = todayRange();
+  }
+
+  const repairs = await Repair.find(match)
+    .populate("technician", "name")
+    .lean();
+
+  const result = [];
+  let partsCostTotal = 0;
+
+  const bySupplierMap = new Map(); // supplier -> { items:[], totalCost }
+
+  for (const r of repairs) {
+    const parts = (r.parts || []).map((p) => ({
+      name: p.name,
+      cost: Number(p.cost) || 0,
+      supplier: p.supplier || "—",
+      source: p.source || "—",
+      purchaseDate: p.purchaseDate,
+    }));
+    const partsCost = parts.reduce((s, p) => s + (Number(p.cost) || 0), 0);
+    partsCostTotal += partsCost;
+
+    result.push({
+      _id: r._id,
+      repairId: r.repairId,
+      customerName: r.customerName,
+      deviceType: r.deviceType,
+      technician: r.technician
+        ? { id: r.technician._id, name: r.technician.name }
+        : null,
+      deliveryDate: r.deliveryDate,
+      parts,
+      partsCost,
+      finalPrice: Number(r.finalPrice || r.price || 0),
+      profit: Math.max(0, Number(r.finalPrice || r.price || 0) - partsCost),
+    });
+
+    for (const p of parts) {
+      const key = p.supplier || "—";
+      if (!bySupplierMap.has(key))
+        bySupplierMap.set(key, { items: [], totalCost: 0 });
+      bySupplierMap.get(key).items.push({
+        repairId: r.repairId,
+        name: p.name,
+        source: p.source,
+        cost: Number(p.cost) || 0,
+        purchaseDate: p.purchaseDate,
+      });
+      bySupplierMap.get(key).totalCost += Number(p.cost) || 0;
+    }
+  }
+
+  const bySupplier = [...bySupplierMap.entries()]
+    .map(([supplier, v]) => ({
+      supplier,
+      items: v.items,
+      totalCost: v.totalCost,
+    }))
+    .sort((a, b) => b.totalCost - a.totalCost);
+
+  res.json({
+    range: { startDate, endDate, all: String(all) === "true" },
+    totals: {
+      partsCostTotal, // 👈 مطلوب في الملخص
+      // محتفظين بباقي المجاميع لو احتجتها لاحقًا
+      repairsCount: repairs.length,
+      finalPriceTotal: result.reduce((s, r) => s + r.finalPrice, 0),
+      profitTotal: result.reduce((s, r) => s + r.profit, 0),
+    },
+    repairs: result,
+    bySupplier, // 👈 اجمالي لكل مورد (totalCost)
+  });
 });
 
 module.exports = router;

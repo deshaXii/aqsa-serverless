@@ -1,234 +1,356 @@
+// src/api/repairs.routes.js
 const express = require("express");
 const router = express.Router();
-const Repair = require("../models/Repair.model.js");
-const Technician = require("../models/User.model.js");
-const auth = require("../middleware/auth.js");
-const checkPermission = require("../middleware/checkPermission.js");
-const Notification = require("../models/Notification.model.js");
+const Repair = require("../models/Repair.model");
+const User = require("../models/User.model");
+const Log = require("../models/Log.model");
 const Counter = require("../models/Counter.model");
+const Notification = require("../models/Notification.model");
+const Settings = require("../models/Settings.model");
+const auth = require("../middleware/auth");
+const checkPermission = require("../middleware/checkPermission");
 
-// ✅ جلب جميع الصيانات مع فلترة للفنيين
-router.get("/", auth, async (req, res) => {
-  try {
-    const page = parseInt(req.query.page) || 1;
-    const limit = 30;
-    const skip = (page - 1) * limit;
-    let filters = {};
-    const { technician, dateFilter, repairId } = req.query;
+router.use(auth);
 
-    // فلترة حسب ID إذا موجود
-    if (repairId) {
-      filters.repairId = repairId;
-    }
+// ===== Helpers =====
+function canViewAll(user) {
+  return (
+    user?.role === "admin" ||
+    user?.permissions?.adminOverride ||
+    user?.permissions?.addRepair ||
+    user?.permissions?.receiveDevice
+  );
+}
+async function getAdmins() {
+  return User.find({
+    $or: [{ role: "admin" }, { "permissions.adminOverride": true }],
+  })
+    .select("_id")
+    .lean();
+}
 
-    // فلترة حسب الفني
-    if (technician) {
-      filters.technician = technician;
-    }
-
-    if (req.user.role !== "admin" && !req.user.permissions?.receiveDevice) {
-      filters.$or = [{ technician: req.user.id }, { recipient: req.user.id }];
-    }
-
-    // فلترة حسب التاريخ
-    if (dateFilter) {
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-
-      if (dateFilter === "today") {
-        filters.createdAt = { $gte: today };
-      } else if (dateFilter === "yesterday") {
-        const yesterday = new Date(today);
-        yesterday.setDate(yesterday.getDate() - 1);
-        filters.createdAt = { $gte: yesterday, $lt: today };
-      }
-      // 'all' لا يحتاج إلى فلترة
-    }
-
-    const [repairs, total] = await Promise.all([
-      Repair.find(filters)
-        .sort({ createdAt: -1 }) // الأحدث أولاً
-        .skip(skip)
-        .limit(limit)
-        .populate("technician recipient")
-        .populate("technician", "name phone"),
-
-      Repair.countDocuments(filters),
-    ]);
-
-    res.json({
-      repairs,
-      totalPages: Math.ceil(total / limit),
-      currentPage: page,
-    });
-  } catch (err) {
-    console.error("Error fetching repairs:", err);
-    res.status(500).json({ message: "فشل في جلب الصيانات" });
-  }
-});
-
-// ✅ جلب صيانة واحدة
-router.get("/:id", auth, async (req, res) => {
-  try {
-    const repair = await Repair.findById(req.params.id)
-      .populate("technician recipient")
-      .exec();
-
-    if (!repair) return res.status(404).json({ message: "الصيانة غير موجودة" });
-    res.json(repair);
-  } catch (err) {
-    res.status(500).json({ message: "فشل في تحميل تفاصيل الصيانة" });
-  }
-});
-
-// ✅ إنشاء صيانة جديدة
-router.post("/", auth, checkPermission("addRepair"), async (req, res) => {
-  try {
-    const counter = await Counter.findOneAndUpdate(
-      { name: "repairId" },
-      { $inc: { seq: 1 } },
-      { new: true, upsert: true }
-    );
-
-    const newRepair = new Repair({
-      repairId: counter.seq,
-      ...req.body,
-      status: "في الانتظار",
-    });
-
-    await newRepair.save();
-
-    const recipientUser = await Technician.findById(req.body.recipient);
-    const technicianUser = await Technician.findById(req.body.technician);
-
-    if (technicianUser) {
-      await Notification.create({
-        user: technicianUser._id,
-        message: `تم إسناد صيانة جديدة لك من قبل ${
-          recipientUser?.name || "أحد المستخدمين"
-        }`,
-        type: "repair",
+// بث + حفظ إشعار
+async function notifyUsers(req, userIds, message, type = "repair", meta = {}) {
+  if (!Array.isArray(userIds) || userIds.length === 0) return;
+  const docs = await Notification.insertMany(
+    userIds.map((u) => ({ user: u, message, type, meta }))
+  );
+  const io = req.app.get("io");
+  if (io) {
+    for (const n of docs) {
+      io.to(String(n.user)).emit("notification:new", {
+        _id: String(n._id),
+        message: n.message,
+        type: n.type,
+        meta: n.meta || {},
+        createdAt: n.createdAt,
       });
     }
-
-    if (req.user.role !== "admin") {
-      const admins = await Technician.find({ role: "admin" });
-      for (let admin of admins) {
-        await Notification.create({
-          user: admin._id,
-          message: `قام ${recipientUser?.name || "مستخدم"} بإضافة صيانة للفني ${
-            technicianUser?.name
-          }`,
-          type: "repair",
-        });
-      }
-    }
-
-    res.json(newRepair);
-  } catch (err) {
-    res.status(400).json({
-      message: "فشل في إنشاء الصيانة",
-      error: err.message,
-    });
   }
+}
+
+function diffChanges(oldDoc, newDoc, fields) {
+  const changes = [];
+  fields.forEach((f) => {
+    const a = oldDoc[f],
+      b = newDoc[f];
+    if (JSON.stringify(a) !== JSON.stringify(b))
+      changes.push({ field: f, from: a, to: b });
+  });
+  return changes;
+}
+async function nextRepairId() {
+  const c = await Counter.findOneAndUpdate(
+    { name: "repairId" },
+    { $inc: { seq: 1 } },
+    { new: true, upsert: true }
+  );
+  return c.seq;
+}
+function buildCreatedAtFilter(startDate, endDate) {
+  if (!startDate && !endDate) return null;
+  const createdAt = {};
+  if (startDate) {
+    if (/^\d{4}-\d{2}-\d{2}$/.test(startDate)) {
+      const s = new Date(startDate);
+      s.setHours(0, 0, 0, 0);
+      createdAt.$gte = s;
+    } else createdAt.$gte = new Date(startDate);
+  }
+  if (endDate) {
+    if (/^\d{4}-\d{2}-\d{2}$/.test(endDate)) {
+      const e = new Date(endDate);
+      e.setHours(0, 0, 0, 0);
+      e.setDate(e.getDate() + 1);
+      createdAt.$lt = e;
+    } else createdAt.$lte = new Date(endDate);
+  }
+  return createdAt;
+}
+
+// ===== LIST =====
+router.get("/", async (req, res) => {
+  const { q, status, technician, startDate, endDate, page = 1 } = req.query;
+  const filter = {};
+  const createdAt = buildCreatedAtFilter(startDate, endDate);
+  if (createdAt) filter.createdAt = createdAt;
+  if (status) filter.status = status;
+
+  const viewAll = canViewAll(req.user);
+  if (viewAll) {
+    if (technician) filter.technician = technician;
+  } else {
+    filter.technician = req.user.id;
+  }
+
+  if (q) {
+    filter.$or = [
+      { customerName: new RegExp(q, "i") },
+      { phone: new RegExp(q, "i") },
+      { deviceType: new RegExp(q, "i") },
+      { issue: new RegExp(q, "i") },
+    ];
+  }
+
+  const limit = 30;
+  const docs = await Repair.find(filter)
+    .sort({ createdAt: -1 })
+    .skip((Number(page) - 1) * limit)
+    .limit(limit)
+    .populate("technician", "name")
+    .populate("recipient", "name")
+    .populate("createdBy", "name")
+    .lean();
+
+  res.json(docs);
 });
 
-// ✅ تحديث صيانة
-router.put("/:id", auth, checkPermission("editRepair"), async (req, res) => {
-  try {
-    const repair = await Repair.findById(req.params.id);
-    if (!repair) return res.status(404).json({ message: "الصيانة غير موجودة" });
+// ===== GET one =====
+router.get("/:id", async (req, res) => {
+  const r = await Repair.findById(req.params.id)
+    .populate("technician", "name")
+    .populate("recipient", "name")
+    .populate("createdBy", "name")
+    .populate({
+      path: "logs",
+      options: { sort: { createdAt: -1 } },
+      populate: { path: "changedBy", select: "name" },
+    })
+    .lean();
+  if (!r) return res.status(404).json({ message: "Not found" });
 
+  if (!canViewAll(req.user)) {
     if (
-      req.user.role !== "admin" &&
-      repair.technician.toString() !== req.user.id
+      !r.technician ||
+      String(r.technician._id || r.technician) !== String(req.user.id)
     ) {
       return res
         .status(403)
-        .json({ message: "ليس لديك صلاحية لتعديل هذه الصيانة" });
+        .json({ message: "ليست لديك صلاحية عرض هذه الصيانة" });
     }
-
-    if (req.body.status === "تم التسليم") {
-      const { price, parts } = req.body;
-      if (!price) {
-        return res
-          .status(400)
-          .json({ message: "يجب إدخال سعر الصيانة عند التسليم" });
-      }
-
-      const partsTotal = (parts || []).reduce(
-        (sum, p) => sum + Number(p.cost || 0),
-        0
-      );
-
-      repair.price = price;
-      repair.parts = parts || [];
-      repair.profit = price - partsTotal;
-      repair.totalPartsCost = partsTotal;
-    }
-
-    // فقط حدّث الحقول الفعليّة (بدون undefined)
-    Object.entries(req.body).forEach(([key, val]) => {
-      if (val !== undefined) repair[key] = val;
-    });
-
-    await repair.save();
-
-    // ✅ إشعارات عند التسليم
-    if (repair.status === "تم التسليم") {
-      const adminUsers = await Technician.find({ role: "admin" });
-      for (let admin of adminUsers) {
-        await Notification.create({
-          user: admin._id,
-          message: `تم تغيير حالة الصيانة بواسطة ${req.user.name} للجهاز (${repair.deviceType})`,
-          type: "status",
-        });
-      }
-
-      if (repair.recipient) {
-        await Notification.create({
-          user: repair.recipient,
-          message: `تم تسليم جهاز (${repair.deviceType}) بواسطة الفني ${req.user.name}`,
-          type: "status",
-        });
-      }
-    }
-
-    res.json(repair);
-  } catch (err) {
-    res
-      .status(400)
-      .json({ message: "فشل في تحديث الصيانة", error: err.message });
   }
+
+  res.json(r);
 });
 
-// ✅ حذف صيانة
+// ===== CREATE =====
+router.post(
+  "/",
+  require("../middleware/checkPermission")("addRepair"),
+  async (req, res) => {
+    const payload = req.body || {};
+    payload.repairId = await nextRepairId();
+    payload.createdBy = req.user.id;
+
+    const r = new Repair(payload);
+    await r.save();
+
+    const log = await Log.create({
+      repair: r._id,
+      action: "create",
+      changedBy: req.user.id,
+      details: "إنشاء صيانة جديدة",
+    });
+    await Repair.findByIdAndUpdate(r._id, { $push: { logs: log._id } });
+
+    const admins = await getAdmins();
+    const recipients = [];
+    if (r.technician) recipients.push(r.technician.toString());
+    recipients.push(...admins.map((a) => a._id.toString()));
+    await notifyUsers(
+      req,
+      recipients,
+      `تم إضافة صيانة جديدة #${r.repairId}`,
+      "repair",
+      { repairId: r._id }
+    );
+
+    res.json(r);
+  }
+);
+
+// ===== UPDATE =====
+router.put("/:id", async (req, res) => {
+  const repair = await Repair.findById(req.params.id);
+  if (!repair) return res.status(404).json({ message: "Not found" });
+
+  const body = req.body || {};
+  const user = req.user;
+
+  const canEditAll =
+    user.role === "admin" ||
+    user.permissions?.adminOverride ||
+    user.permissions?.editRepair;
+  const isAssignedTech =
+    repair.technician && String(repair.technician) === String(user.id);
+
+  if (!canEditAll) {
+    if (!isAssignedTech)
+      return res.status(403).json({ message: "غير مسموح بالتعديل" });
+
+    const allowedKeys = ["status", "password"];
+    if (body.status === "تم التسليم") allowedKeys.push("finalPrice", "parts");
+    if (body.status === "مرفوض") allowedKeys.push("rejectedDeviceLocation");
+
+    const unknown = Object.keys(body).filter((k) => !allowedKeys.includes(k));
+    if (unknown.length)
+      return res.status(403).json({ message: "غير مسموح بالتعديل" });
+
+    if (!body.password)
+      return res.status(400).json({ message: "مطلوب كلمة السر للتأكيد" });
+    const fresh = await User.findById(user.id);
+    const ok = await fresh.comparePassword(body.password);
+    if (!ok) return res.status(400).json({ message: "كلمة السر غير صحيحة" });
+  }
+
+  const before = repair.toObject();
+
+  if (body.status) {
+    if (body.status === "جاري العمل" && !repair.startTime)
+      repair.startTime = new Date();
+    if (body.status === "مكتمل" && !repair.endTime) repair.endTime = new Date();
+    if (body.status === "تم التسليم") {
+      repair.deliveryDate = new Date();
+      repair.returned = false;
+      repair.returnDate = undefined;
+      if (typeof body.finalPrice !== "undefined")
+        repair.finalPrice = Number(body.finalPrice) || 0;
+      if (Array.isArray(body.parts)) repair.parts = body.parts;
+    }
+    if (body.status === "مرتجع") {
+      repair.returned = true;
+      repair.returnDate = new Date();
+    }
+    if (body.status === "مرفوض" && body.rejectedDeviceLocation) {
+      repair.rejectedDeviceLocation = body.rejectedDeviceLocation;
+    }
+    repair.status = body.status;
+  }
+
+  if (canEditAll) {
+    const assignIfDefined = (key, castFn) => {
+      if (Object.prototype.hasOwnProperty.call(body, key)) {
+        repair[key] = castFn ? castFn(body[key]) : body[key];
+      }
+    };
+    assignIfDefined("customerName");
+    assignIfDefined("phone");
+    assignIfDefined("deviceType");
+    assignIfDefined("color");
+    assignIfDefined("issue");
+    assignIfDefined("price", (v) => Number(v) || 0);
+    if (
+      typeof body.finalPrice !== "undefined" &&
+      body.status !== "تم التسليم"
+    ) {
+      repair.finalPrice = Number(body.finalPrice) || 0;
+    }
+    if (Array.isArray(body.parts) && body.status !== "تم التسليم")
+      repair.parts = body.parts;
+    assignIfDefined("notes");
+    if (
+      body.technician &&
+      String(body.technician) !== String(repair.technician || "")
+    ) {
+      repair.technician = body.technician;
+    }
+    if (body.recipient) repair.recipient = body.recipient;
+  }
+
+  repair.updatedBy = user.id;
+  await repair.save();
+
+  const fieldsToTrack = [
+    "status",
+    "technician",
+    "finalPrice",
+    "notes",
+    "recipient",
+    "parts",
+    "deliveryDate",
+    "returnDate",
+    "rejectedDeviceLocation",
+    "customerName",
+    "phone",
+    "deviceType",
+    "color",
+    "issue",
+    "price",
+  ];
+  const after = repair.toObject();
+  const changes = diffChanges(before, after, fieldsToTrack);
+  const log = await Log.create({
+    repair: repair._id,
+    action: body.status && !canEditAll ? "status_change" : "update",
+    changedBy: user.id,
+    details: "تعديل على الصيانة",
+    changes,
+  });
+  await Repair.findByIdAndUpdate(repair._id, { $push: { logs: log._id } });
+
+  const admins = await getAdmins();
+  const recipients = new Set(admins.map((a) => a._id.toString()));
+  if (repair.technician) recipients.add(String(repair.technician));
+  await notifyUsers(
+    req,
+    [...recipients],
+    `تم تحديث صيانة #${repair.repairId}`,
+    "repair",
+    { repairId: repair._id }
+  );
+
+  const populated = await Repair.findById(repair._id)
+    .populate("technician", "name")
+    .populate("recipient", "name")
+    .populate("createdBy", "name")
+    .lean();
+
+  res.json(populated);
+});
+
+// ===== DELETE =====
 router.delete(
   "/:id",
-  auth,
-  checkPermission("deleteRepair"),
+  require("../middleware/checkPermission")("deleteRepair"),
   async (req, res) => {
-    try {
-      const repair = await Repair.findById(req.params.id);
-      if (!repair)
-        return res.status(404).json({ message: "الصيانة غير موجودة" });
-
-      if (
-        req.user.role !== "admin" &&
-        repair.technician.toString() !== req.user.id
-      ) {
-        return res
-          .status(403)
-          .json({ message: "ليس لديك صلاحية لحذف هذه الصيانة" });
-      }
-
-      await repair.deleteOne();
-      res.json({ message: "تم حذف الصيانة" });
-    } catch (err) {
-      res
-        .status(500)
-        .json({ message: "فشل في حذف الصيانة", error: err.message });
-    }
+    const r = await Repair.findById(req.params.id);
+    if (!r) return res.status(404).json({ message: "Not found" });
+    await Repair.deleteOne({ _id: r._id });
+    const log = await Log.create({
+      repair: r._id,
+      action: "delete",
+      changedBy: req.user.id,
+      details: "حذف الصيانة",
+    });
+    const admins = await getAdmins();
+    await notifyUsers(
+      req,
+      admins.map((a) => a._id),
+      `تم حذف صيانة #${r.repairId}`,
+      "repair",
+      { repairId: r._id }
+    );
+    res.json({ ok: true, logId: log._id });
   }
 );
 

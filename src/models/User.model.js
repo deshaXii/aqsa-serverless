@@ -1,30 +1,45 @@
+// src/models/User.model.js
 const mongoose = require("mongoose");
 const bcrypt = require("bcryptjs");
 
-const permissionsSchema = new mongoose.Schema({
-  addRepair: { type: Boolean, default: false },
-  editRepair: { type: Boolean, default: false },
-  deleteRepair: { type: Boolean, default: false },
-  receiveDevice: { type: Boolean, default: false },
-  accessAccounts: { type: Boolean, default: false },
-  adminOverride: { type: Boolean, default: false }, // صلاحية تعطي كل صلاحيات الأدمن
-});
-
-const userSchema = new mongoose.Schema(
+const PermissionsSchema = new mongoose.Schema(
   {
-    username: String,
-    password: String,
-    name: String,
-    role: { type: String, default: "technician" }, // admin or technician
-    permissions: permissionsSchema,
+    addRepair: { type: Boolean, default: false },
+    editRepair: { type: Boolean, default: false },
+    deleteRepair: { type: Boolean, default: false },
+    receiveDevice: { type: Boolean, default: false },
+    accessAccounts: { type: Boolean, default: false },
+    adminOverride: { type: Boolean, default: false },
+  },
+  { _id: false }
+);
+
+const UserSchema = new mongoose.Schema(
+  {
+    username: { type: String, unique: true, required: true, trim: true },
+    name: { type: String, required: true, trim: true },
+    password: { type: String, required: true },
+    role: {
+      type: String,
+      enum: ["admin", "technician"],
+      default: "technician",
+    },
+    permissions: { type: PermissionsSchema, default: () => ({}) },
+    // النسبة الخاصة بالفني (إن وُجدت) — تمثل نسبة الفني من ربح الصيانة (0-100)
+    commissionPct: { type: Number, min: 0, max: 100, default: undefined },
   },
   { timestamps: true }
 );
 
-userSchema.pre("save", async function (next) {
+UserSchema.pre("save", async function (next) {
   if (!this.isModified("password")) return next();
-  this.password = await bcrypt.hash(this.password, 10);
+  const salt = await bcrypt.genSalt(10);
+  this.password = await bcrypt.hash(this.password, salt);
   next();
 });
 
-module.exports = mongoose.model("User", userSchema);
+UserSchema.methods.comparePassword = async function (candidate) {
+  return bcrypt.compare(candidate, this.password);
+};
+
+module.exports = mongoose.models.User || mongoose.model("User", UserSchema);

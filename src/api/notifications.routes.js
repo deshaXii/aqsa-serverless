@@ -1,40 +1,119 @@
-// backend/routes/notifications.js
+// src/api/notifications.routes.js
 const express = require("express");
-const auth = require("../middleware/auth.js");
-const Notification = require("../models/Notification.model.js");
-
 const router = express.Router();
+const auth = require("../middleware/auth");
+const Notification = require("../models/Notification.model");
 
-// ✅ Get all notifications for the logged-in user
-router.get("/", auth, async (req, res) => {
-  try {
-    const notifications = await Notification.find({ user: req.userId })
-      .sort({ createdAt: -1 })
-      .limit(100);
-    res.json(notifications);
-  } catch (err) {
-    res.status(500).json({ message: "فشل في تحميل الإشعارات" });
-  }
+router.use(auth);
+
+function setReadFlags(doc) {
+  doc.isRead = true;
+  doc.read = true;
+  doc.seen = true;
+  doc.readAt = new Date();
+}
+
+// عداد غير المقروء
+router.get("/unread-count", async (req, res) => {
+  const userId = req.user.id;
+  const filter = {
+    user: userId,
+    $or: [
+      { isRead: false },
+      { read: false },
+      { seen: false },
+      {
+        $and: [
+          { isRead: { $exists: false } },
+          { read: { $exists: false } },
+          { seen: { $exists: false } },
+        ],
+      },
+    ],
+  };
+  const count = await Notification.countDocuments(filter);
+  res.json({ count });
 });
 
-// ✅ Mark one as read
-router.put("/:id/read", auth, async (req, res) => {
-  try {
-    await Notification.findByIdAndUpdate(req.params.id, { read: true });
-    res.json({ success: true });
-  } catch (err) {
-    res.status(500).json({ message: "فشل في تحديث الإشعار" });
+// لستة الإشعارات (ادعم unread=true)
+router.get("/", async (req, res) => {
+  const { unread, limit = 50, offset = 0 } = req.query;
+  const filter = { user: req.user.id };
+  if (String(unread) === "true") {
+    filter.$or = [
+      { isRead: false },
+      { read: false },
+      { seen: false },
+      {
+        $and: [
+          { isRead: { $exists: false } },
+          { read: { $exists: false } },
+          { seen: { $exists: false } },
+        ],
+      },
+    ];
   }
+  const items = await Notification.find(filter)
+    .sort({ createdAt: -1 })
+    .skip(Number(offset))
+    .limit(Math.max(1, Math.min(200, Number(limit))))
+    .lean();
+  res.json(items);
 });
 
-// ✅ Clear all
-router.delete("/clear", auth, async (req, res) => {
-  try {
-    await Notification.deleteMany({ user: req.userId });
-    res.json({ success: true });
-  } catch (err) {
-    res.status(500).json({ message: "فشل في حذف الإشعارات" });
+// علِّم واحد كمقروء
+router.put("/:id/read", async (req, res) => {
+  const { id } = req.params;
+  const n = await Notification.findOne({ _id: id, user: req.user.id });
+  if (!n) return res.status(404).json({ message: "Not found" });
+  setReadFlags(n);
+  await n.save();
+  res.json({ ok: true, notification: n.toObject() });
+});
+
+// علِّم الكل كمقروء
+router.put("/mark-all-read", async (req, res) => {
+  const filter = {
+    user: req.user.id,
+    $or: [
+      { isRead: false },
+      { read: false },
+      { seen: false },
+      {
+        $and: [
+          { isRead: { $exists: false } },
+          { read: { $exists: false } },
+          { seen: { $exists: false } },
+        ],
+      },
+    ],
+  };
+  const r = await Notification.updateMany(filter, {
+    $set: { isRead: true, read: true, seen: true, readAt: new Date() },
+  });
+  res.json({ ok: true, modified: r.modifiedCount ?? r.nModified ?? 0 });
+});
+
+// 🧹 مسح الإشعارات
+// DELETE /api/notifications/clear
+// ?all=true  → امسح الكل
+// (الافتراضي) امسح "المقروء فقط" للحفاظ على غير المقروء
+router.delete("/clear", async (req, res) => {
+  const all = String(req.query.all || "").toLowerCase() === "true";
+  const baseFilter = { user: req.user.id };
+
+  let filter;
+  if (all) {
+    filter = baseFilter;
+  } else {
+    filter = {
+      ...baseFilter,
+      $or: [{ isRead: true }, { read: true }, { seen: true }],
+    };
   }
+
+  const r = await Notification.deleteMany(filter);
+  res.json({ ok: true, deleted: r.deletedCount || 0 });
 });
 
 module.exports = router;
