@@ -1,4 +1,3 @@
-// src/api/technicians.routes.js
 const express = require("express");
 const router = express.Router();
 const User = require("../models/User.model");
@@ -11,18 +10,53 @@ const bcrypt = require("bcryptjs");
 
 router.use(auth);
 
-// قائمة الفنيين
+// مفاتيح الصلاحيات المعتمدة في الواجهة
+const PERM_KEYS = [
+  "accessAccounts",
+  "addRepair",
+  "editRepair",
+  "deleteRepair",
+  "receiveDevice",
+  "settings",
+  "adminOverride",
+];
+
+// تحويل أي قيمة إلى Boolean مضبوط
+const toBool = (v) =>
+  v === true ||
+  v === 1 ||
+  v === "1" ||
+  v === "true" ||
+  v === "on" ||
+  v === "yes";
+
+// تطبيع كائن الصلاحيات من أي حقل كان (permissions | perms)
+function normalizePerms(doc) {
+  const src = (doc && (doc.permissions || doc.perms || doc)) || {};
+  const out = {};
+  for (const k of PERM_KEYS) out[k] = toBool(src[k] ?? false);
+  return out;
+}
+
+// ========== قائمة الفنيين ==========
 router.get("/", async (req, res) => {
   const techs = await User.find({ role: "technician" })
-    .select("name username commissionPct permissions")
+    .select("name username commissionPct permissions perms createdAt")
     .lean();
-  res.json(techs);
+
+  const result = techs.map((t) => ({
+    ...t,
+    permissions: normalizePerms(t),
+  }));
+  res.json(result);
 });
 
-// بروفايل الفني (كما أرسلته لك سابقًا)
+// ========== بروفايل الفني ==========
 router.get("/:id/profile", async (req, res) => {
   const techId = req.params.id;
-  const tech = await User.findById(techId).select("name commissionPct").lean();
+  const tech = await User.findById(techId)
+    .select("name commissionPct permissions perms")
+    .lean();
   if (!tech) return res.status(404).json({ message: "Technician not found" });
 
   const settings = await Settings.findOne().lean();
@@ -30,91 +64,82 @@ router.get("/:id/profile", async (req, res) => {
     tech.commissionPct ?? settings?.defaultTechCommissionPct ?? 50;
 
   const repairs = await Repair.find({ technician: techId }).lean();
-  const counts = {
-    total: repairs.length,
-    open: repairs.filter((r) => !["تم التسليم", "مرفوض"].includes(r.status))
-      .length,
-    completed: repairs.filter((r) => r.status === "مكتمل").length,
-    delivered: repairs.filter((r) => r.status === "تم التسليم").length,
-    returned: repairs.filter((r) => r.status === "مرتجع").length,
-    rejected: repairs.filter((r) => r.status === "مرفوض").length,
-  };
 
-  let sumProfit = 0,
-    sumTech = 0,
-    sumShop = 0;
-  for (const r of repairs) {
-    const { profit, techShare, shopShare } = calcProfit({
-      finalPrice: r.finalPrice ?? r.price ?? 0,
-      parts: r.parts || [],
-      commissionPct,
-    });
-    sumProfit += profit;
-    sumTech += techShare;
-    sumShop += shopShare;
-  }
-
-  const currentAssignments = repairs
-    .filter(
-      (r) =>
-        ["في الانتظار", "جاري العمل", "مكتمل", "مرتجع"].includes(r.status) &&
-        r.status !== "تم التسليم"
-    )
-    .map((r) => ({
-      id: r._id,
-      repairId: r.repairId,
-      status: r.status,
-      customerName: r.customerName,
-      createdAt: r.createdAt,
-      startTime: r.startTime,
-    }));
-
+  const summary = calcProfit(repairs, { commissionPct });
   res.json({
-    tech,
-    counts,
-    totals: { profit: sumProfit, techShare: sumTech, shopShare: sumShop },
-    currentAssignments,
+    tech: {
+      ...tech,
+      commissionPct,
+      permissions: normalizePerms(tech),
+    },
+    repairsCount: repairs.length,
+    summary,
   });
 });
 
-// إنشاء فني — أدمن فقط
+// ========== إنشاء فني جديد (أدمن فقط) ==========
 router.post("/", checkPermission("adminOverride"), async (req, res) => {
-  const { username, name, password, commissionPct } = req.body || {};
-  if (!username || !name || !password)
+  const {
+    name,
+    username,
+    password,
+    commissionPct = 50,
+    permissions,
+  } = req.body || {};
+  if (!name || !username || !password)
     return res.status(400).json({ message: "بيانات ناقصة" });
-  const exist = await User.findOne({ username });
-  if (exist) return res.status(400).json({ message: "اسم المستخدم مستخدم" });
+
+  const exists = await User.findOne({ username }).lean();
+  if (exists) return res.status(409).json({ message: "اسم المستخدم مستخدم" });
+
+  const normPerms = normalizePerms(permissions || {});
   const u = new User({
     username,
     name,
     password,
     role: "technician",
-    commissionPct,
+    commissionPct: Number(commissionPct),
+    permissions: normPerms,
+    perms: normPerms, // نحفظ في الحقلين لتوافق الإصدارات
   });
   await u.save();
   res.json({ ok: true, id: u._id });
 });
 
-// تحديث بيانات وصلاحيات الفني — أدمن فقط
+// ========== تحديث بيانات وصلاحيات الفني (أدمن فقط) ==========
 router.put("/:id", checkPermission("adminOverride"), async (req, res) => {
   const { name, username, commissionPct, permissions, password } =
     req.body || {};
   const u = await User.findById(req.params.id);
   if (!u) return res.status(404).json({ message: "Not found" });
+
   if (typeof name === "string") u.name = name;
   if (typeof username === "string") u.username = username;
-  if (typeof commissionPct !== "undefined") u.commissionPct = commissionPct;
+  if (typeof commissionPct !== "undefined")
+    u.commissionPct = Number(commissionPct);
+
   if (permissions && typeof permissions === "object") {
-    u.permissions = { ...(u.permissions || {}), ...permissions };
+    // نقرأ الموجود (من أي حقل) ثم ندمج المدخلات بعد تطبيعها
+    const current = normalizePerms(u);
+    const incoming = normalizePerms(permissions);
+    const merged = { ...current, ...incoming };
+
+    u.permissions = merged;
+    u.perms = merged; // كتابة في الحقلين
+    u.markModified("permissions");
+    u.markModified("perms");
   }
+
   if (password) {
     const salt = await bcrypt.genSalt(10);
     u.password = await bcrypt.hash(password, salt);
   }
+
   await u.save();
-  res.json({ ok: true });
+  res.json({ ok: true, permissions: normalizePerms(u) });
 });
 
+// ========== حذف فني ==========
 router.delete("/:id", checkPermission("adminOverride"), async (req, res) => {
   await User.findByIdAndDelete(req.params.id);
   res.json({ ok: true });
