@@ -67,5 +67,8 @@ const RepairSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+RepairSchema.index({ createdAt: 1 });
+RepairSchema.index({ deliveryDate: 1 });
+
 module.exports =
   mongoose.models.Repair || mongoose.model("Repair", RepairSchema);

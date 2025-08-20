@@ -89,40 +89,93 @@ function buildCreatedAtFilter(startDate, endDate) {
 }
 
 // ===== LIST =====
-router.get("/", async (req, res) => {
-  const { q, status, technician, startDate, endDate, page = 1 } = req.query;
-  const filter = {};
-  const createdAt = buildCreatedAtFilter(startDate, endDate);
-  if (createdAt) filter.createdAt = createdAt;
-  if (status) filter.status = status;
+router.get("/", auth, async (req, res) => {
+  try {
+    const { q, status, technician, startDate, endDate } = req.query;
 
-  const viewAll = canViewAll(req.user);
-  if (viewAll) {
+    const filter = {};
+
+    // نص بحث بسيط
+    if (q) {
+      const rx = new RegExp(
+        String(q)
+          .trim()
+          .replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+        "i"
+      );
+      filter.$or = [
+        { customerName: rx },
+        { phone: rx },
+        { deviceType: rx },
+        { issue: rx },
+        ...(filter.$or || []),
+      ];
+    }
+
+    // تصفية بالحالة
+    if (status) filter.status = status;
+
+    // تصفية بالفني (لو مبعوتة من الفرونت)
     if (technician) filter.technician = technician;
-  } else {
-    filter.technician = req.user.id;
+
+    // ⬅️ أهم تعديل: نطاق التاريخ يشمل createdAt **أو** deliveryDate
+    if (startDate || endDate) {
+      const start = startDate ? new Date(`${startDate}T00:00:00`) : null; // محلي
+      const end = endDate ? new Date(`${endDate}T23:59:59.999`) : null; // محلي
+
+      const createdCond = {};
+      const deliveredCond = {};
+      if (start) {
+        createdCond.$gte = start;
+        deliveredCond.$gte = start;
+      }
+      if (end) {
+        createdCond.$lte = end;
+        deliveredCond.$lte = end;
+      }
+
+      const dateOr = [];
+      if (Object.keys(createdCond).length)
+        dateOr.push({ createdAt: createdCond });
+      if (Object.keys(deliveredCond).length)
+        dateOr.push({ deliveryDate: deliveredCond });
+
+      if (dateOr.length) {
+        // لو كان فيه $or من البحث، ضيف OR جديد بطريقة صحيحة
+        if (filter.$or) {
+          filter.$and = [{ $or: filter.$or }, { $or: dateOr }];
+          delete filter.$or;
+        } else {
+          filter.$or = dateOr;
+        }
+      }
+    }
+
+    // (اختياري) احترام صلاحيات العرض: لو المستخدم مش Admin ولا عنده امتيازات معينة
+    // اقفل البيانات على الصيانات اللي هو فنيها
+    const canViewAll =
+      req.user.role === "admin" ||
+      req.user.permissions?.adminOverride ||
+      req.user.permissions?.addRepair ||
+      req.user.permissions?.receiveDevice;
+
+    if (!canViewAll) {
+      // شوف فقط اللي مُعيّن عليها
+      filter.technician = req.user.id;
+    }
+
+    const list = await Repair.find(filter)
+      .sort({ createdAt: -1 })
+      .populate("technician", "name")
+      .populate("createdBy", "name")
+      .populate("recipient", "name")
+      .lean();
+
+    res.json(list);
+  } catch (e) {
+    console.error("list repairs error:", e);
+    res.status(500).json({ message: "تعذر تحميل البيانات" });
   }
-
-  if (q) {
-    filter.$or = [
-      { customerName: new RegExp(q, "i") },
-      { phone: new RegExp(q, "i") },
-      { deviceType: new RegExp(q, "i") },
-      { issue: new RegExp(q, "i") },
-    ];
-  }
-
-  const limit = 30;
-  const docs = await Repair.find(filter)
-    .sort({ createdAt: -1 })
-    .skip((Number(page) - 1) * limit)
-    .limit(limit)
-    .populate("technician", "name")
-    .populate("recipient", "name")
-    .populate("createdBy", "name")
-    .lean();
-
-  res.json(docs);
 });
 
 // ===== GET one =====
