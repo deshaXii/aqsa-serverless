@@ -96,7 +96,6 @@ router.get("/", auth, async (req, res) => {
 
     const filter = {};
 
-    // نص بحث بسيط
     if (q) {
       const rx = new RegExp(
         String(q)
@@ -112,17 +111,12 @@ router.get("/", auth, async (req, res) => {
         ...(filter.$or || []),
       ];
     }
-
-    // تصفية بالحالة
     if (status) filter.status = status;
-
-    // تصفية بالفني (لو مبعوتة من الفرونت)
     if (technician) filter.technician = technician;
 
-    // ⬅️ أهم تعديل: نطاق التاريخ يشمل createdAt **أو** deliveryDate
     if (startDate || endDate) {
-      const start = startDate ? new Date(`${startDate}T00:00:00`) : null; // محلي
-      const end = endDate ? new Date(`${endDate}T23:59:59.999`) : null; // محلي
+      const start = startDate ? new Date(`${startDate}T00:00:00`) : null;
+      const end = endDate ? new Date(`${endDate}T23:59:59.999`) : null;
 
       const createdCond = {};
       const deliveredCond = {};
@@ -142,7 +136,6 @@ router.get("/", auth, async (req, res) => {
         dateOr.push({ deliveryDate: deliveredCond });
 
       if (dateOr.length) {
-        // لو كان فيه $or من البحث، ضيف OR جديد بطريقة صحيحة
         if (filter.$or) {
           filter.$and = [{ $or: filter.$or }, { $or: dateOr }];
           delete filter.$or;
@@ -152,16 +145,13 @@ router.get("/", auth, async (req, res) => {
       }
     }
 
-    // (اختياري) احترام صلاحيات العرض: لو المستخدم مش Admin ولا عنده امتيازات معينة
-    // اقفل البيانات على الصيانات اللي هو فنيها
-    const canViewAll =
+    const canViewAllFlag =
       req.user.role === "admin" ||
       req.user.permissions?.adminOverride ||
       req.user.permissions?.addRepair ||
       req.user.permissions?.receiveDevice;
 
-    if (!canViewAll) {
-      // شوف فقط اللي مُعيّن عليها
+    if (!canViewAllFlag) {
       filter.technician = req.user.id;
     }
 
@@ -213,42 +203,54 @@ router.post(
   auth,
   requireAny(isAdmin, hasPerm("addRepair"), hasPerm("receiveDevice")),
   async (req, res) => {
-    const payload = req.body || {};
-    payload.repairId = await nextRepairId();
-    payload.createdBy = req.user.id;
+    try {
+      const payload = req.body || {};
+      payload.repairId = await nextRepairId();
+      payload.createdBy = req.user.id;
 
-    const r = new Repair(payload);
-    await r.save();
+      const r = new Repair(payload);
+      await r.save();
 
-    const log = await Log.create({
-      repair: r._id,
-      action: "create",
-      changedBy: req.user.id,
-      details: "إنشاء صيانة جديدة",
-    });
-    await Repair.findByIdAndUpdate(r._id, { $push: { logs: log._id } });
+      const log = await Log.create({
+        repair: r._id,
+        action: "create",
+        changedBy: req.user.id,
+        details: "إنشاء صيانة جديدة",
+      });
+      await Repair.findByIdAndUpdate(r._id, { $push: { logs: log._id } });
 
-    const admins = await getAdmins();
-    const recipients = [];
-    if (r.technician) recipients.push(r.technician.toString());
-    recipients.push(...admins.map((a) => a._id.toString()));
-    await notifyUsers(
-      req,
-      recipients,
-      `تم إضافة صيانة جديدة #${r.repairId}`,
-      "repair",
-      { repairId: r._id }
-    );
+      const admins = await getAdmins();
+      const recipients = [];
+      if (r.technician) recipients.push(r.technician.toString());
+      recipients.push(...admins.map((a) => a._id.toString()));
+      await notifyUsers(
+        req,
+        recipients,
+        `تم إضافة صيانة جديدة #${r.repairId}`,
+        "repair",
+        { repairId: r._id }
+      );
 
-    res.json(r);
+      res.json(r);
+    } catch (e) {
+      // معالجة واضحة لخطأ الفهرس القديم parts.id
+      if (e?.code === 11000 && e?.keyPattern && e.keyPattern["parts.id"]) {
+        return res.status(400).json({
+          message:
+            "فهرس قديم على parts.id يسبب تعارض. تم إزالة الاعتماد عليه في الكود. لو استمر الخطأ، أسقط الفهرس parts.id_1 من مجموعة repairs ثم أعد المحاولة.",
+        });
+      }
+      console.error("create repair error:", e);
+      res.status(500).json({ message: "تعذر إنشاء الصيانة" });
+    }
   }
 );
 
+// ====== normalize + UPDATE (كما هو مع تعديلاتك السابقة) ======
 function normalizeRejectedLocation(v) {
   if (v == null) return null;
   const s = String(v).trim();
 
-  // طبيعيات بسيطة
   const t = s
     .replace(/\s+/g, " ")
     .replace(/[اأإآ]/g, "ا")
@@ -256,28 +258,22 @@ function normalizeRejectedLocation(v) {
     .replace(/ة/g, "ه")
     .toLowerCase();
 
-  // كلمات مفتاحية
   const hasClient =
-    t.includes("عميل") ||
-    t.includes("زبون") ||
-    t.includes("العميل") ||
-    t.includes("زبون");
+    t.includes("عميل") || t.includes("زبون") || t.includes("العميل");
   const hasShop =
     t.includes("محل") ||
     t.includes("المحل") ||
-    t.includes("بالدكان") ||
-    t.includes("بالورشه");
+    t.includes("بالورشه") ||
+    t.includes("بالدكان");
 
   if (hasClient) return "مع العميل";
   if (hasShop) return "بالمحل";
 
-  // قبول الصيغ الصحيحة مباشرةً
   if (s === "مع العميل" || s === "بالمحل") return s;
 
   return null;
 }
 
-// ===== UPDATE =====
 router.put("/:id", async (req, res) => {
   const repair = await Repair.findById(req.params.id);
   if (!repair) return res.status(404).json({ message: "Not found" });
@@ -331,16 +327,12 @@ router.put("/:id", async (req, res) => {
     }
     if (body.status === "مرفوض") {
       let loc = normalizeRejectedLocation(body.rejectedDeviceLocation);
-
-      // لو مفيش قيمة، عيّن افتراضيًا "بالمحل" لتفادي أخطاء enum
       if (!loc) loc = "بالمحل";
       repair.rejectedDeviceLocation = loc;
 
-      // لو الجهاز مع العميل وقت الرفض، سجّل وقت التسليم
       if (loc === "مع العميل") {
         if (!repair.deliveryDate) repair.deliveryDate = new Date();
       } else {
-        // بالمحل: ما نعتبرهاش مُسلّمة
         repair.deliveryDate = undefined;
       }
     }

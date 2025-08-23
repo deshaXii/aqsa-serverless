@@ -1,8 +1,10 @@
+// src/models/Part.model.js
 const mongoose = require("mongoose");
 
 const partSchema = new mongoose.Schema(
   {
-    id: { type: Number, unique: true, index: true },
+    // ⚠️ إزالة unique/index لتفادي تعارضات null
+    id: { type: Number }, // اختياري؛ يفضل الاعتماد على _id
     name: String,
     source: String,
     cost: Number,

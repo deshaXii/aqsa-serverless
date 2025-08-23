@@ -1,17 +1,28 @@
 // src/models/Repair.model.js
 const mongoose = require("mongoose");
 
+/**
+ * ملاحظة مهمة:
+ * - لا نستخدم حقل id مخصص لجزء الصيانة (parts.id) لأنه سبب فهرس unique قديم.
+ * - نعتمد على _id الافتراضي لكل عنصر من عناصر parts.
+ * - أضفنا حقول الدفع: paid, paidAt, paidBy + qty
+ */
 const PartSchema = new mongoose.Schema(
   {
-    id: { type: Number, unique: true, index: true },
+    // ⚠️ كان هنا id: { type: Number, unique: true, index: true } — تم إلغاؤه
     name: { type: String, required: true, trim: true },
     source: { type: String, trim: true },
+    supplier: { type: String, trim: true }, // (يُستخدم كـ vendor في التقارير)
     cost: { type: Number, default: 0 },
-    supplier: { type: String, trim: true },
-    // تاريخ شراء القطعة
     purchaseDate: { type: Date, default: Date.now },
+
+    // جديدة/مدعومة:
+    qty: { type: Number, default: 1, min: 1 },
+    paid: { type: Boolean, default: false },
+    paidAt: { type: Date },
+    paidBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
   },
-  { _id: true }
+  { _id: true } // نحتفظ بـ _id الافتراضي لكل جزء
 );
 
 const RepairSchema = new mongoose.Schema(
@@ -25,7 +36,7 @@ const RepairSchema = new mongoose.Schema(
     price: { type: Number, default: 0 },
 
     technician: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
-    recipient: { type: mongoose.Schema.Types.ObjectId, ref: "User" }, // من استلم الجهاز
+    recipient: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
     parts: { type: [PartSchema], default: [] },
 
     status: {
@@ -41,27 +52,23 @@ const RepairSchema = new mongoose.Schema(
       default: "في الانتظار",
     },
 
-    // سجلات وملاحظات
     logs: [{ type: mongoose.Schema.Types.ObjectId, ref: "Log" }],
     notes: { type: String, trim: true },
 
-    // أزمنة العمل
-    startTime: { type: Date }, // بدأ الشغل فعليًا
-    finalPrice: { type: Number }, // السعر النهائي للعميل
-    endTime: { type: Date }, // اكتملت الصيانة
-    deliveryDate: { type: Date }, // تم التسليم
-    // المرتجع
+    startTime: { type: Date },
+    finalPrice: { type: Number },
+    endTime: { type: Date },
+    deliveryDate: { type: Date },
+
     returned: { type: Boolean, default: false },
     returnDate: { type: Date },
 
-    // حالة "مرفوض" — هل الجهاز بالمحل أم أخذه العميل؟
     rejectedDeviceLocation: {
       type: String,
       enum: ["بالمحل", "مع العميل", null],
       default: null,
     },
 
-    // تتبُّع الإنشاء/التعديل
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
     updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
   },
@@ -70,6 +77,44 @@ const RepairSchema = new mongoose.Schema(
 
 RepairSchema.index({ createdAt: 1 });
 RepairSchema.index({ deliveryDate: 1 });
+
+/**
+ * إسقاط الفهرس القديم parts.id_1 إن وُجد (كان unique ويسبّب E11000)
+ * نعملها “أفضل جهد” وقت الاتصال بقاعدة البيانات.
+ */
+async function dropOldPartsIdIndexIfExists() {
+  try {
+    const conn = mongoose.connection;
+    if (!conn || typeof conn.collection !== "function") return;
+
+    const doDrop = async () => {
+      try {
+        const coll = conn.collection("repairs");
+        const idx = await coll.indexes();
+        const target = idx.find(
+          (i) => i.name === "parts.id_1" || (i.key && i.key["parts.id"] === 1)
+        );
+        if (target) {
+          await coll.dropIndex(target.name);
+          console.log("[repairs] Dropped legacy index:", target.name);
+        }
+      } catch (e) {
+        // ما نوقفش السيرفر لو فشل — سجل فقط
+        console.log("[repairs] Index drop check:", e.message);
+      }
+    };
+
+    if (conn.readyState === 1) {
+      // connected بالفعل
+      doDrop();
+    } else {
+      conn.once("open", doDrop);
+    }
+  } catch (e) {
+    console.log("[repairs] dropOldPartsIdIndexIfExists error:", e.message);
+  }
+}
+dropOldPartsIdIndexIfExists();
 
 module.exports =
   mongoose.models.Repair || mongoose.model("Repair", RepairSchema);

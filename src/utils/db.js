@@ -24,22 +24,6 @@ async function connectDB() {
     console.error("❌ MongoDB connection error:", err.message);
     throw err;
   }
-
-  mongoose.connection.once("open", async () => {
-    try {
-      const coll = mongoose.connection.collection("repairs");
-      const indexes = await coll.indexes();
-      const toDrop = indexes.find(
-        (i) => i.name === "parts.id_1" || (i.key && i.key["parts.id"] === 1)
-      );
-      if (toDrop) {
-        await coll.dropIndex(toDrop.name);
-        console.log("Dropped index:", toDrop.name);
-      }
-    } catch (e) {
-      console.log("Index drop check:", e.message);
-    }
-  });
 }
 
 module.exports = connectDB;
