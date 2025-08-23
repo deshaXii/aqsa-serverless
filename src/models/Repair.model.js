@@ -3,6 +3,7 @@ const mongoose = require("mongoose");
 
 const PartSchema = new mongoose.Schema(
   {
+    id: { type: Number, unique: true, index: true },
     name: { type: String, required: true, trim: true },
     source: { type: String, trim: true },
     cost: { type: Number, default: 0 },
@@ -10,7 +11,7 @@ const PartSchema = new mongoose.Schema(
     // تاريخ شراء القطعة
     purchaseDate: { type: Date, default: Date.now },
   },
-  { _id: false }
+  { _id: true }
 );
 
 const RepairSchema = new mongoose.Schema(

@@ -76,10 +76,12 @@ router.get(
           profit: 0,
           techShare: 0,
           shopShare: 0,
+          deliveredCount: 0,
         };
         cur.profit += profit;
         cur.techShare += techShare;
         cur.shopShare += shopShare;
+        cur.deliveredCount += 1; // ← عدّ الصيانات المسلّمة للفني ده
         byTech.set(techId, cur);
       }
 

@@ -244,6 +244,39 @@ router.post(
   }
 );
 
+function normalizeRejectedLocation(v) {
+  if (v == null) return null;
+  const s = String(v).trim();
+
+  // طبيعيات بسيطة
+  const t = s
+    .replace(/\s+/g, " ")
+    .replace(/[اأإآ]/g, "ا")
+    .replace(/ى/g, "ي")
+    .replace(/ة/g, "ه")
+    .toLowerCase();
+
+  // كلمات مفتاحية
+  const hasClient =
+    t.includes("عميل") ||
+    t.includes("زبون") ||
+    t.includes("العميل") ||
+    t.includes("زبون");
+  const hasShop =
+    t.includes("محل") ||
+    t.includes("المحل") ||
+    t.includes("بالدكان") ||
+    t.includes("بالورشه");
+
+  if (hasClient) return "مع العميل";
+  if (hasShop) return "بالمحل";
+
+  // قبول الصيغ الصحيحة مباشرةً
+  if (s === "مع العميل" || s === "بالمحل") return s;
+
+  return null;
+}
+
 // ===== UPDATE =====
 router.put("/:id", async (req, res) => {
   const repair = await Repair.findById(req.params.id);
@@ -296,8 +329,20 @@ router.put("/:id", async (req, res) => {
       repair.returned = true;
       repair.returnDate = new Date();
     }
-    if (body.status === "مرفوض" && body.rejectedDeviceLocation) {
-      repair.rejectedDeviceLocation = body.rejectedDeviceLocation;
+    if (body.status === "مرفوض") {
+      let loc = normalizeRejectedLocation(body.rejectedDeviceLocation);
+
+      // لو مفيش قيمة، عيّن افتراضيًا "بالمحل" لتفادي أخطاء enum
+      if (!loc) loc = "بالمحل";
+      repair.rejectedDeviceLocation = loc;
+
+      // لو الجهاز مع العميل وقت الرفض، سجّل وقت التسليم
+      if (loc === "مع العميل") {
+        if (!repair.deliveryDate) repair.deliveryDate = new Date();
+      } else {
+        // بالمحل: ما نعتبرهاش مُسلّمة
+        repair.deliveryDate = undefined;
+      }
     }
     repair.status = body.status;
   }
