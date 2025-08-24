@@ -112,6 +112,27 @@ async function notifyUsers(req, userIds, message, type = "repair", meta = {}) {
             : "/notifications",
       });
 
+    try {
+      const url = meta?.repairId
+        ? `/repairs/${meta.repairId}`
+        : "/notifications";
+      await sendToUsers(userIds, {
+        title: message, // مثال: "تم تحديث صيانة #95"
+        body:
+          (meta?.deviceType ? `جهاز: ${meta.deviceType} • ` : "") +
+          (meta?.customerName ? `عميل: ${meta.customerName}` : ""),
+        url,
+        tag: meta?.repairId ? `repair-${meta.repairId}` : "notif",
+        requireInteraction: false,
+        vibrate: [100, 50, 100],
+        icon: "/icons/icon-192.png",
+        badge: "/icons/icon-192.png",
+        data: { url, repairId: meta?.repairId || null },
+      });
+    } catch (e) {
+      console.warn("[notifyUsers] push skipped:", e?.message || e);
+    }
+
     await Promise.allSettled(
       subs.map((s) =>
         webpush.sendNotification(s, payload({ type, meta })).catch(() => {})

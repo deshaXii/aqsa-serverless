@@ -3,6 +3,8 @@ const express = require("express");
 const router = express.Router();
 const auth = require("../middleware/auth");
 const Notification = require("../models/Notification.model");
+const PushSubscription = require("../models/PushSubscription.model");
+const { enabled, VAPID_PUBLIC_KEY } = require("../utils/push");
 
 router.use(auth);
 
@@ -156,6 +158,38 @@ router.delete("/clear", async (req, res) => {
     console.error("notifications clear error:", e);
     res.status(500).json({ message: "تعذر مسح الإشعارات" });
   }
+});
+
+router.get("/vapid-public-key", (req, res) => {
+  res.json({ publicKey: VAPID_PUBLIC_KEY || "" });
+});
+
+// === Web Push: حفظ/تحديث اشتراك ===
+router.post("/subscriptions", async (req, res) => {
+  const sub = req.body && req.body.subscription;
+  if (!enabled) return res.status(503).json({ message: "Push disabled" });
+  if (!sub || !sub.endpoint || !sub.keys)
+    return res.status(400).json({ message: "Invalid subscription" });
+
+  const doc = await PushSubscription.findOneAndUpdate(
+    { endpoint: sub.endpoint },
+    {
+      user: req.user.id,
+      endpoint: sub.endpoint,
+      keys: sub.keys,
+      ua: req.headers["user-agent"] || "",
+    },
+    { upsert: true, new: true }
+  );
+  res.json({ ok: true, id: doc._id });
+});
+
+// === Web Push: حذف اشتراك (اختياري) ===
+router.delete("/subscriptions", async (req, res) => {
+  const endpoint = req.body && req.body.endpoint;
+  if (!endpoint) return res.status(400).json({ message: "endpoint required" });
+  await PushSubscription.deleteOne({ endpoint, user: req.user.id });
+  res.json({ ok: true });
 });
 
 module.exports = router;
