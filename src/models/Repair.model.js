@@ -1,28 +1,35 @@
 // src/models/Repair.model.js
 const mongoose = require("mongoose");
 
-/**
- * ملاحظة مهمة:
- * - لا نستخدم حقل id مخصص لجزء الصيانة (parts.id) لأنه سبب فهرس unique قديم.
- * - نعتمد على _id الافتراضي لكل عنصر من عناصر parts.
- * - أضفنا حقول الدفع: paid, paidAt, paidBy + qty
- */
 const PartSchema = new mongoose.Schema(
   {
-    // ⚠️ كان هنا id: { type: Number, unique: true, index: true } — تم إلغاؤه
+    id: { type: Number },
     name: { type: String, required: true, trim: true },
     source: { type: String, trim: true },
-    supplier: { type: String, trim: true }, // (يُستخدم كـ vendor في التقارير)
+    supplier: { type: String, trim: true },
     cost: { type: Number, default: 0 },
     purchaseDate: { type: Date, default: Date.now },
-
-    // جديدة/مدعومة:
     qty: { type: Number, default: 1, min: 1 },
     paid: { type: Boolean, default: false },
     paidAt: { type: Date },
     paidBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
   },
-  { _id: true } // نحتفظ بـ _id الافتراضي لكل جزء
+  { _id: true }
+);
+
+const PublicTrackingSchema = new mongoose.Schema(
+  {
+    enabled: { type: Boolean, default: true },
+    token: { type: String, unique: true, sparse: true, index: true },
+    showPrice: { type: Boolean, default: false },
+    showEta: { type: Boolean, default: true },
+    createdAt: { type: Date, default: Date.now },
+    lastViewedAt: Date,
+    views: { type: Number, default: 0 },
+    expiresAt: Date,
+    passcodeHash: String, // لو فعلت PIN مستقبلاً
+  },
+  { _id: false }
 );
 
 const RepairSchema = new mongoose.Schema(
@@ -34,11 +41,9 @@ const RepairSchema = new mongoose.Schema(
     color: { type: String, trim: true },
     phone: { type: String, trim: true },
     price: { type: Number, default: 0 },
-
     technician: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
     recipient: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
     parts: { type: [PartSchema], default: [] },
-
     status: {
       type: String,
       enum: [
@@ -69,6 +74,10 @@ const RepairSchema = new mongoose.Schema(
       default: null,
     },
 
+    publicTracking: { type: PublicTrackingSchema, default: () => ({}) },
+    eta: { type: Date }, // موعد تسليم متوقع
+    notesPublic: { type: String }, // ملاحظة قصيرة للعميل
+
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
     updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
   },
@@ -78,10 +87,11 @@ const RepairSchema = new mongoose.Schema(
 RepairSchema.index({ createdAt: 1 });
 RepairSchema.index({ deliveryDate: 1 });
 
-/**
- * إسقاط الفهرس القديم parts.id_1 إن وُجد (كان unique ويسبّب E11000)
- * نعملها “أفضل جهد” وقت الاتصال بقاعدة البيانات.
- */
+RepairSchema.index(
+  { "publicTracking.token": 1 },
+  { unique: true, sparse: true }
+);
+
 async function dropOldPartsIdIndexIfExists() {
   try {
     const conn = mongoose.connection;

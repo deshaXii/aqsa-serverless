@@ -10,10 +10,45 @@ const Settings = require("../models/Settings.model");
 const auth = require("../middleware/auth");
 const checkPermission = require("../middleware/checkPermission");
 const { requireAny, isAdmin, hasPerm } = require("../middleware/perm");
+const crypto = require("crypto");
+const QRCode = require("qrcode");
 
 router.use(auth);
 
 // ===== Helpers =====
+
+function _label(field) {
+  const map = {
+    status: "الحالة",
+    finalPrice: "السعر النهائي",
+    price: "السعر",
+    deliveryDate: "تاريخ التسليم",
+    rejectedDeviceLocation: "مكان الجهاز",
+    technician: "الفني",
+  };
+  return map[field] || field;
+}
+function summarizeChanges(changes = []) {
+  return (changes || [])
+    .filter((c) =>
+      [
+        "status",
+        "finalPrice",
+        "price",
+        "deliveryDate",
+        "rejectedDeviceLocation",
+        "technician",
+      ].includes(c.field)
+    )
+    .map((c) => ({
+      field: c.field,
+      label: _label(c.field),
+      from: c.from ?? "—",
+      to: c.to ?? "—",
+    }))
+    .slice(0, 5);
+}
+
 function canViewAll(user) {
   return (
     user?.role === "admin" ||
@@ -67,6 +102,36 @@ async function nextRepairId() {
     { new: true, upsert: true }
   );
   return c.seq;
+}
+function baseUrl(req) {
+  // يشتغل محلي وعلى Vercel
+  const host = req.get("x-forwarded-host") || req.get("host");
+  const proto = (req.get("x-forwarded-proto") || req.protocol || "https")
+    .split(",")[0]
+    .trim();
+  return `${proto}://${host}`;
+}
+function generateTrackingToken(len = 12) {
+  // URL-safe
+  return crypto
+    .randomBytes(Math.ceil(len * 0.75))
+    .toString("base64")
+    .replace(/[+/=]/g, "")
+    .slice(0, len);
+}
+// عرض آمن مختصر للتحديث العام (للبث)
+function publicPatchView(r) {
+  return {
+    repairId: r.repairId,
+    status: r.status,
+    createdAt: r.createdAt,
+    startTime: r.startTime || null,
+    endTime: r.endTime || null,
+    deliveryDate: r.deliveryDate || null,
+    eta: r.eta || null,
+    notesPublic: r.notesPublic || null,
+    finalPrice: typeof r.finalPrice === "number" ? r.finalPrice : null,
+  };
 }
 function buildCreatedAtFilter(startDate, endDate) {
   if (!startDate && !endDate) return null;
@@ -208,6 +273,15 @@ router.post(
       payload.repairId = await nextRepairId();
       payload.createdBy = req.user.id;
 
+      // خلق توكن تتبّع
+      const token = generateTrackingToken();
+      payload.publicTracking = {
+        enabled: true,
+        token,
+        showPrice: false,
+        showEta: true,
+      };
+
       const r = new Repair(payload);
       await r.save();
 
@@ -228,8 +302,20 @@ router.post(
         recipients,
         `تم إضافة صيانة جديدة #${r.repairId}`,
         "repair",
-        { repairId: r._id }
+        {
+          repairId: r._id,
+          logId: log._id,
+          deviceType: r.deviceType,
+          repairNumber: r.repairId,
+          changes: [],
+        }
       );
+
+      const trackingUrl = `${baseUrl(req)}/t/${token}`;
+
+      // نُرجع نفس الكائن + trackingUrl للاستخدام في المودال
+      const plain = r.toObject();
+      plain.publicTrackingUrl = trackingUrl;
 
       res.json(r);
     } catch (e) {
@@ -350,7 +436,7 @@ router.put("/:id", async (req, res) => {
     assignIfDefined("deviceType");
     assignIfDefined("color");
     assignIfDefined("issue");
-    assignIfDefined("price", (v) => Number(v) || 0);
+    // assignIfDefined("price", (v) => Number(v) || 0);
     if (
       typeof body.finalPrice !== "undefined" &&
       body.status !== "تم التسليم"
@@ -360,6 +446,8 @@ router.put("/:id", async (req, res) => {
     if (Array.isArray(body.parts) && body.status !== "تم التسليم")
       repair.parts = body.parts;
     assignIfDefined("notes");
+    assignIfDefined("eta", (v) => (v ? new Date(v) : null));
+    assignIfDefined("notesPublic");
     if (
       body.technician &&
       String(body.technician) !== String(repair.technician || "")
@@ -388,6 +476,8 @@ router.put("/:id", async (req, res) => {
     "color",
     "issue",
     "price",
+    "eta",
+    "notesPublic",
   ];
   const after = repair.toObject();
   const changes = diffChanges(before, after, fieldsToTrack);
@@ -399,7 +489,15 @@ router.put("/:id", async (req, res) => {
     changes,
   });
   await Repair.findByIdAndUpdate(repair._id, { $push: { logs: log._id } });
-
+  // بثّ عام (لو التتبّع شغّال)
+  const io = req.app.get("io");
+  const token = repair.publicTracking?.enabled && repair.publicTracking?.token;
+  if (io && token) {
+    io.to(`public:${token}`).emit(
+      "public:repair:update",
+      publicPatchView(repair)
+    );
+  }
   const admins = await getAdmins();
   const recipients = new Set(admins.map((a) => a._id.toString()));
   if (repair.technician) recipients.add(String(repair.technician));
@@ -408,7 +506,12 @@ router.put("/:id", async (req, res) => {
     [...recipients],
     `تم تحديث صيانة #${repair.repairId}`,
     "repair",
-    { repairId: repair._id }
+    {
+      repairId: repair._id,
+      deviceType: repair.deviceType,
+      repairNumber: repair.repairId,
+      changes: summarizeChanges(changes),
+    }
   );
 
   const populated = await Repair.findById(repair._id)
@@ -445,5 +548,51 @@ router.delete(
     res.json({ ok: true, logId: log._id });
   }
 );
+
+// ===== إدارة تتبّع عام (تفعيل/تعطيل/تجديد/خيارات العرض)
+router.post("/:id/public-tracking", requireAny(isAdmin), async (req, res) => {
+  const { id } = req.params;
+  const { enabled, regenerate, showPrice, showEta } = req.body || {};
+  const r = await Repair.findById(id);
+  if (!r) return res.status(404).json({ message: "Not found" });
+
+  if (!r.publicTracking) r.publicTracking = {};
+  if (typeof enabled === "boolean") r.publicTracking.enabled = enabled;
+  if (typeof showPrice !== "undefined")
+    r.publicTracking.showPrice = !!showPrice;
+  if (typeof showEta !== "undefined") r.publicTracking.showEta = !!showEta;
+
+  if (regenerate || !r.publicTracking.token) {
+    r.publicTracking.token = generateTrackingToken();
+    r.publicTracking.createdAt = new Date();
+    r.publicTracking.views = 0;
+    r.publicTracking.lastViewedAt = null;
+  }
+
+  await r.save();
+  const trackingUrl = `${baseUrl(req)}/t/${r.publicTracking.token}`;
+  res.json({
+    ok: true,
+    token: r.publicTracking.token,
+    url: trackingUrl,
+    publicTracking: r.publicTracking,
+  });
+});
+
+// ===== QR SVG جاهز للطباعة
+router.get("/:id/public-qr.svg", requireAny(isAdmin), async (req, res) => {
+  const r = await Repair.findById(req.params.id)
+    .select("publicTracking repairId deviceType")
+    .lean();
+  if (!r || !r.publicTracking?.token) return res.status(404).end();
+  const url = `${baseUrl(req)}/t/${r.publicTracking.token}`;
+  res.setHeader("Content-Type", "image/svg+xml");
+  const svg = await QRCode.toString(url, {
+    type: "svg",
+    margin: 1,
+    width: 256,
+  });
+  res.send(svg);
+});
 
 module.exports = router;
