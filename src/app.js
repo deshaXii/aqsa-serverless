@@ -48,6 +48,7 @@ app.use("/api/chat", require("./api/chat.routes"));
 app.use("/api/accounts", require("./api/accounts.routes"));
 app.use("/api/backup", require("./api/backup.routes"));
 app.use("/api/public", require("./api/public.routes"));
+app.use("/api/push", require("./api/push.routes"));
 
 // صحة السيرفر
 app.get("/health", (req, res) => res.json({ ok: true }));

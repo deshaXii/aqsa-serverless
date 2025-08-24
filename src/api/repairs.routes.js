@@ -68,9 +68,13 @@ async function getAdmins() {
 // بث + حفظ إشعار
 async function notifyUsers(req, userIds, message, type = "repair", meta = {}) {
   if (!Array.isArray(userIds) || userIds.length === 0) return;
+
+  // 1) خزّن الإشعار في DB (زي ما هو)
   const docs = await Notification.insertMany(
     userIds.map((u) => ({ user: u, message, type, meta }))
   );
+
+  // 2) Socket.io (كودك القديم كما هو)
   const io = req.app.get("io");
   if (io) {
     for (const n of docs) {
@@ -82,6 +86,39 @@ async function notifyUsers(req, userIds, message, type = "repair", meta = {}) {
         createdAt: n.createdAt,
       });
     }
+  }
+
+  // 3) Web Push — بدون ما يبوّظ أي حاجة قائمة
+  try {
+    const NotificationSub = require("../models/NotificationSub.model");
+    const webpush = require("web-push");
+
+    const subs = await NotificationSub.find({ user: { $in: userIds } }).lean();
+    if (!subs.length) return;
+
+    // لو الإعدادات ناقصة، بلاش نبعت
+    if (!process.env.VAPID_PUBLIC_KEY || !process.env.VAPID_PRIVATE_KEY) return;
+
+    const payload = (n) =>
+      JSON.stringify({
+        title:
+          n.type === "repair"
+            ? `صيانة #${meta.repairSeq || meta.repairId || ""}`
+            : "إشعار",
+        body: message,
+        url:
+          n.type === "repair" && meta?.repairId
+            ? `/repairs/${meta.repairId}`
+            : "/notifications",
+      });
+
+    await Promise.allSettled(
+      subs.map((s) =>
+        webpush.sendNotification(s, payload({ type, meta })).catch(() => {})
+      )
+    );
+  } catch (e) {
+    console.warn("push send skipped:", e?.message || e);
   }
 }
 
